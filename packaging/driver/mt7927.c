@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.2.0"
+#define DRV_VERSION "0.2.1"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -122,9 +122,15 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 
 /* Additional debug registers */
 #define MT_HIF_REMAP_L1			0x155024
+#define MT_HIF_REMAP_L1_MASK		GENMASK(31, 16)
+#define MT_HIF_REMAP_L1_OFFSET		GENMASK(15, 0)
+#define MT_HIF_REMAP_L1_BASE		0x130000
 #define MT_INFRA_CFG_BASE		0xd1000
 #define MT_WFDMA_DUMMY_CR		(MT_WFDMA0_BASE + 0x120)
 #define MT_MCU_WPDMA0_BASE		0x54000000
+
+/* Remap window size */
+#define MT_HIF_REMAP_WINDOW_SIZE	0x10000	/* 64KB window */
 
 /* =============================================================================
  * Constants
@@ -160,6 +166,7 @@ struct mt76_desc {
 struct mt7927_dev {
 	struct pci_dev *pdev;
 	void __iomem *regs;
+	resource_size_t regs_len;	/* BAR0 length for bounds checking */
 
 	/* DMA rings */
 	struct mt76_desc *tx_ring;
@@ -178,18 +185,118 @@ struct mt7927_dev {
 };
 
 /* =============================================================================
- * Register Access Helpers with Debug Logging
+ * Register Access Helpers with Debug Logging and Bounds Checking
  * =============================================================================
  */
 
+/* Safe register read - checks bounds to prevent crashes */
 static inline u32 mt7927_rr(struct mt7927_dev *dev, u32 offset)
 {
+	if (offset >= dev->regs_len) {
+		if (debug_regs)
+			dev_warn(&dev->pdev->dev,
+				 "  READ  [0x%08x] OUT OF BOUNDS (max 0x%llx)\n",
+				 offset, (unsigned long long)dev->regs_len);
+		return 0xdeadbeef;
+	}
 	return readl(dev->regs + offset);
 }
 
+/* Safe register write - checks bounds to prevent crashes */
 static inline void mt7927_wr(struct mt7927_dev *dev, u32 offset, u32 val)
 {
+	if (offset >= dev->regs_len) {
+		if (debug_regs)
+			dev_warn(&dev->pdev->dev,
+				 "  WRITE [0x%08x] OUT OF BOUNDS (max 0x%llx)\n",
+				 offset, (unsigned long long)dev->regs_len);
+		return;
+	}
 	writel(val, dev->regs + offset);
+}
+
+/*
+ * Remapped register access for high addresses (0x7c0xxxxx range)
+ * Uses HIF_REMAP_L1 to create a window into high address space
+ */
+static u32 mt7927_rr_remap(struct mt7927_dev *dev, u32 addr)
+{
+	u32 base, offset, val, remap_val;
+
+	/* Calculate base (64KB aligned) and offset within window */
+	base = addr & ~(MT_HIF_REMAP_WINDOW_SIZE - 1);
+	offset = addr & (MT_HIF_REMAP_WINDOW_SIZE - 1);
+
+	/* Check if HIF_REMAP_L1 itself is accessible */
+	if (MT_HIF_REMAP_L1 >= dev->regs_len) {
+		dev_warn(&dev->pdev->dev,
+			 "  REMAP: Cannot access HIF_REMAP_L1 (0x%x >= 0x%llx)\n",
+			 MT_HIF_REMAP_L1, (unsigned long long)dev->regs_len);
+		return 0xdeadbeef;
+	}
+
+	/* Program the remap register */
+	remap_val = FIELD_PREP(MT_HIF_REMAP_L1_MASK, base >> 16);
+	writel(remap_val, dev->regs + MT_HIF_REMAP_L1);
+
+	/* Ensure write completes */
+	(void)readl(dev->regs + MT_HIF_REMAP_L1);
+
+	/* Read through the remap window */
+	if (MT_HIF_REMAP_L1_BASE + offset >= dev->regs_len) {
+		dev_warn(&dev->pdev->dev,
+			 "  REMAP: Window offset 0x%x out of range\n",
+			 MT_HIF_REMAP_L1_BASE + offset);
+		return 0xdeadbeef;
+	}
+
+	val = readl(dev->regs + MT_HIF_REMAP_L1_BASE + offset);
+
+	if (debug_regs)
+		dev_info(&dev->pdev->dev,
+			 "  REMAP READ [0x%08x] = 0x%08x (window: base=0x%x, off=0x%x)\n",
+			 addr, val, base, offset);
+
+	return val;
+}
+
+static void mt7927_wr_remap(struct mt7927_dev *dev, u32 addr, u32 val)
+{
+	u32 base, offset, remap_val;
+
+	/* Calculate base (64KB aligned) and offset within window */
+	base = addr & ~(MT_HIF_REMAP_WINDOW_SIZE - 1);
+	offset = addr & (MT_HIF_REMAP_WINDOW_SIZE - 1);
+
+	/* Check if HIF_REMAP_L1 itself is accessible */
+	if (MT_HIF_REMAP_L1 >= dev->regs_len) {
+		dev_warn(&dev->pdev->dev,
+			 "  REMAP: Cannot access HIF_REMAP_L1 (0x%x >= 0x%llx)\n",
+			 MT_HIF_REMAP_L1, (unsigned long long)dev->regs_len);
+		return;
+	}
+
+	/* Program the remap register */
+	remap_val = FIELD_PREP(MT_HIF_REMAP_L1_MASK, base >> 16);
+	writel(remap_val, dev->regs + MT_HIF_REMAP_L1);
+
+	/* Ensure remap write completes */
+	(void)readl(dev->regs + MT_HIF_REMAP_L1);
+
+	/* Write through the remap window */
+	if (MT_HIF_REMAP_L1_BASE + offset >= dev->regs_len) {
+		dev_warn(&dev->pdev->dev,
+			 "  REMAP: Window offset 0x%x out of range\n",
+			 MT_HIF_REMAP_L1_BASE + offset);
+		return;
+	}
+
+	writel(val, dev->regs + MT_HIF_REMAP_L1_BASE + offset);
+
+	if (debug_regs)
+		dev_info(&dev->pdev->dev,
+			 "  REMAP WRITE [0x%08x] = 0x%08x (window: base=0x%x, off=0x%x)\n",
+			 addr, val, base, offset);
 }
 
 /* Debug read - logs the value */
@@ -281,37 +388,34 @@ static void mt7927_dump_pci_state(struct mt7927_dev *dev)
 	dev_info(&pdev->dev, "  PCI Command: 0x%04x (MEM=%d, MASTER=%d)\n",
 		 cmd, !!(cmd & PCI_COMMAND_MEMORY), !!(cmd & PCI_COMMAND_MASTER));
 	dev_info(&pdev->dev, "  PCI Status:  0x%04x\n", status);
-	dev_info(&pdev->dev, "  BAR0: 0x%08x, BAR2: 0x%08x\n", bar0, bar2);
+	dev_info(&pdev->dev, "  BAR0: 0x%08x (len=%llu KB), BAR2: 0x%08x\n",
+		 bar0, (unsigned long long)dev->regs_len / 1024, bar2);
 	dev_info(&pdev->dev, "  Subsystem: %04x:%04x\n",
 		 pdev->subsystem_vendor, pdev->subsystem_device);
+
+	/* Critical info about register access */
+	dev_info(&pdev->dev, "  MMIO range: 0x00000000 - 0x%08llx\n",
+		 (unsigned long long)dev->regs_len - 1);
+	if (dev->regs_len < 0x7c100000) {
+		dev_warn(&pdev->dev,
+			 "  WARNING: BAR0 too small for high registers!\n");
+		dev_warn(&pdev->dev,
+			 "  Registers like 0x7c060010 are OUT OF RANGE\n");
+	}
 }
 
 static void mt7927_dump_critical_regs(struct mt7927_dev *dev)
 {
 	dev_info(&dev->pdev->dev, "=== Critical Register Dump ===\n");
+	dev_info(&dev->pdev->dev, "  (BAR0 size: 0x%llx, skipping out-of-range)\n",
+		 (unsigned long long)dev->regs_len);
 
-	/* Chip ID */
-	mt7927_rr_debug(dev, MT_HW_CHIPID, "MT_HW_CHIPID");
-	mt7927_rr_debug(dev, MT_HW_REV, "MT_HW_REV");
+	/* Only read registers that are within BAR0 range */
+	/* These are the low-offset DMA registers that should always work */
+	mt7927_rr_debug(dev, MT_PCIE_MAC_INT_ENABLE, "MT_PCIE_MAC_INT_ENABLE");
+	mt7927_rr_debug(dev, MT_PCIE_MAC_INT_STATUS, "MT_PCIE_MAC_INT_STATUS");
 
-	/* Power management */
-	mt7927_rr_debug(dev, MT_CONN_ON_LPCTL, "MT_CONN_ON_LPCTL");
-	mt7927_rr_debug(dev, MT_CONN_ON_LPCTL_ALT, "MT_CONN_ON_LPCTL_ALT");
-
-	/* WFSYS reset status */
-	mt7927_rr_debug(dev, MT_WFSYS_SW_RST_B, "MT_WFSYS_SW_RST_B");
-	mt7927_rr_debug(dev, MT_WFSYS_SW_RST_B_ALT, "MT_WFSYS_SW_RST_B_ALT");
-
-	/* EMI Control */
-	mt7927_rr_debug(dev, MT_HW_EMI_CTL, "MT_HW_EMI_CTL");
-
-	/* Connection status */
-	mt7927_rr_debug(dev, MT_CONN_STATUS, "MT_CONN_STATUS");
-
-	/* Firmware status */
-	mt7927_rr_debug(dev, MT_CONN_ON_MISC, "MT_CONN_ON_MISC");
-
-	/* DMA status */
+	/* DMA status - these are in the 0xd4xxx range */
 	mt7927_rr_debug(dev, MT_WFDMA0_GLO_CFG, "MT_WFDMA0_GLO_CFG");
 	mt7927_rr_debug(dev, MT_WFDMA0_RST, "MT_WFDMA0_RST");
 	mt7927_rr_debug(dev, MT_WFDMA0_GLO_CFG_EXT0, "MT_WFDMA0_GLO_CFG_EXT0");
@@ -319,10 +423,19 @@ static void mt7927_dump_critical_regs(struct mt7927_dev *dev)
 	/* Interrupts */
 	mt7927_rr_debug(dev, MT_WFDMA0_HOST_INT_ENA, "MT_WFDMA0_HOST_INT_ENA");
 	mt7927_rr_debug(dev, MT_WFDMA0_HOST_INT_STA, "MT_WFDMA0_HOST_INT_STA");
-	mt7927_rr_debug(dev, MT_PCIE_MAC_INT_ENABLE, "MT_PCIE_MAC_INT_ENABLE");
 
-	/* DMA Scheduler */
-	mt7927_rr_debug(dev, MT_DMASHDL_SW_CONTROL, "MT_DMASHDL_SW_CONTROL");
+	/* Remap register - check if accessible */
+	mt7927_rr_debug(dev, MT_HIF_REMAP_L1, "MT_HIF_REMAP_L1");
+
+	/* These high-address registers (0x7c0xxxxx) need remapping */
+	if (dev->regs_len > MT_CONN_ON_LPCTL) {
+		mt7927_rr_debug(dev, MT_CONN_ON_LPCTL, "MT_CONN_ON_LPCTL");
+		mt7927_rr_debug(dev, MT_WFSYS_SW_RST_B, "MT_WFSYS_SW_RST_B");
+		mt7927_rr_debug(dev, MT_CONN_ON_MISC, "MT_CONN_ON_MISC");
+	} else {
+		dev_info(&dev->pdev->dev,
+			 "  High registers (0x7c0xxxxx) need remapping\n");
+	}
 }
 
 /* =============================================================================
@@ -330,32 +443,55 @@ static void mt7927_dump_critical_regs(struct mt7927_dev *dev)
  * =============================================================================
  */
 
+/* Helper to poll a remapped register */
+static bool mt7927_poll_remap(struct mt7927_dev *dev, u32 addr, u32 mask,
+			      u32 val, int timeout_ms)
+{
+	u32 cur;
+	int i;
+
+	for (i = 0; i < timeout_ms; i++) {
+		cur = mt7927_rr_remap(dev, addr);
+		if ((cur & mask) == val)
+			return true;
+		usleep_range(1000, 2000);
+	}
+
+	if (debug_regs)
+		dev_warn(&dev->pdev->dev,
+			 "  POLL REMAP TIMEOUT [0x%08x] mask=0x%08x expected=0x%08x got=0x%08x\n",
+			 addr, mask, val, cur);
+
+	return false;
+}
+
 static int mt7927_mcu_fw_pmctrl(struct mt7927_dev *dev)
 {
 	u32 addr = MT_CONN_ON_LPCTL;
 	int i;
 
 	dev_info(&dev->pdev->dev, "=== FW Power Control (give to firmware) ===\n");
+	dev_info(&dev->pdev->dev, "  Using remapped register access for 0x7c0xxxxx\n");
 
-	/* Try primary address first, then alternative */
+	/* Use remapped access for high addresses */
 	for (i = 0; i < MT792x_DRV_OWN_RETRY_COUNT; i++) {
-		u32 val_before = mt7927_rr(dev, addr);
+		u32 val_before = mt7927_rr_remap(dev, addr);
 
-		mt7927_wr(dev, addr, PCIE_LPCR_HOST_SET_OWN);
+		mt7927_wr_remap(dev, addr, PCIE_LPCR_HOST_SET_OWN);
 
-		if (mt7927_poll(dev, addr, PCIE_LPCR_HOST_OWN_SYNC,
-				PCIE_LPCR_HOST_OWN_SYNC, 50)) {
+		if (mt7927_poll_remap(dev, addr, PCIE_LPCR_HOST_OWN_SYNC,
+				      PCIE_LPCR_HOST_OWN_SYNC, 50)) {
 			dev_info(&dev->pdev->dev,
 				 "  FW ownership acquired (attempt %d, addr=0x%08x)\n",
 				 i + 1, addr);
 			dev_info(&dev->pdev->dev,
 				 "  LPCTL: 0x%08x -> 0x%08x\n",
-				 val_before, mt7927_rr(dev, addr));
+				 val_before, mt7927_rr_remap(dev, addr));
 			return 0;
 		}
 
-		dev_dbg(&dev->pdev->dev, "  Attempt %d failed at addr 0x%08x\n",
-			i + 1, addr);
+		dev_info(&dev->pdev->dev, "  Attempt %d failed at addr 0x%08x\n",
+			 i + 1, addr);
 	}
 
 	/* Try alternative address */
@@ -363,10 +499,10 @@ static int mt7927_mcu_fw_pmctrl(struct mt7927_dev *dev)
 	addr = MT_CONN_ON_LPCTL_ALT;
 
 	for (i = 0; i < MT792x_DRV_OWN_RETRY_COUNT; i++) {
-		mt7927_wr(dev, addr, PCIE_LPCR_HOST_SET_OWN);
+		mt7927_wr_remap(dev, addr, PCIE_LPCR_HOST_SET_OWN);
 
-		if (mt7927_poll(dev, addr, PCIE_LPCR_HOST_OWN_SYNC,
-				PCIE_LPCR_HOST_OWN_SYNC, 50)) {
+		if (mt7927_poll_remap(dev, addr, PCIE_LPCR_HOST_OWN_SYNC,
+				      PCIE_LPCR_HOST_OWN_SYNC, 50)) {
 			dev_info(&dev->pdev->dev,
 				 "  FW ownership acquired via ALT address 0x%08x\n", addr);
 			return 0;
@@ -383,27 +519,28 @@ static int mt7927_mcu_drv_pmctrl(struct mt7927_dev *dev)
 	int i;
 
 	dev_info(&dev->pdev->dev, "=== Driver Power Control (take ownership) ===\n");
+	dev_info(&dev->pdev->dev, "  Using remapped register access for 0x7c0xxxxx\n");
 
 	for (i = 0; i < MT792x_DRV_OWN_RETRY_COUNT; i++) {
-		u32 val_before = mt7927_rr(dev, addr);
+		u32 val_before = mt7927_rr_remap(dev, addr);
 
-		mt7927_wr(dev, addr, PCIE_LPCR_HOST_CLR_OWN);
+		mt7927_wr_remap(dev, addr, PCIE_LPCR_HOST_CLR_OWN);
 
 		/* Critical delay for ASPM */
 		if (dev->aspm_supported || disable_aspm)
 			usleep_range(2000, 3000);
 
-		if (mt7927_poll(dev, addr, PCIE_LPCR_HOST_OWN_SYNC, 0, 50)) {
+		if (mt7927_poll_remap(dev, addr, PCIE_LPCR_HOST_OWN_SYNC, 0, 50)) {
 			dev_info(&dev->pdev->dev,
 				 "  Driver ownership acquired (attempt %d)\n", i + 1);
 			dev_info(&dev->pdev->dev,
 				 "  LPCTL: 0x%08x -> 0x%08x\n",
-				 val_before, mt7927_rr(dev, addr));
+				 val_before, mt7927_rr_remap(dev, addr));
 			return 0;
 		}
 
-		dev_dbg(&dev->pdev->dev, "  Attempt %d: LPCTL=0x%08x\n",
-			i + 1, mt7927_rr(dev, addr));
+		dev_info(&dev->pdev->dev, "  Attempt %d: LPCTL=0x%08x\n",
+			 i + 1, mt7927_rr_remap(dev, addr));
 	}
 
 	/* Try alternative address */
@@ -411,12 +548,12 @@ static int mt7927_mcu_drv_pmctrl(struct mt7927_dev *dev)
 	addr = MT_CONN_ON_LPCTL_ALT;
 
 	for (i = 0; i < MT792x_DRV_OWN_RETRY_COUNT; i++) {
-		mt7927_wr(dev, addr, PCIE_LPCR_HOST_CLR_OWN);
+		mt7927_wr_remap(dev, addr, PCIE_LPCR_HOST_CLR_OWN);
 
 		if (dev->aspm_supported)
 			usleep_range(2000, 3000);
 
-		if (mt7927_poll(dev, addr, PCIE_LPCR_HOST_OWN_SYNC, 0, 50)) {
+		if (mt7927_poll_remap(dev, addr, PCIE_LPCR_HOST_OWN_SYNC, 0, 50)) {
 			dev_info(&dev->pdev->dev,
 				 "  Driver ownership via ALT address 0x%08x\n", addr);
 			return 0;
@@ -432,14 +569,26 @@ static int mt7927_mcu_drv_pmctrl(struct mt7927_dev *dev)
  * =============================================================================
  */
 
+/* Helper for remapped set/clear operations */
+static inline void mt7927_set_remap(struct mt7927_dev *dev, u32 addr, u32 val)
+{
+	mt7927_wr_remap(dev, addr, mt7927_rr_remap(dev, addr) | val);
+}
+
+static inline void mt7927_clear_remap(struct mt7927_dev *dev, u32 addr, u32 val)
+{
+	mt7927_wr_remap(dev, addr, mt7927_rr_remap(dev, addr) & ~val);
+}
+
 static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 {
 	u32 addr = try_alt_reset ? MT_WFSYS_SW_RST_B_ALT : MT_WFSYS_SW_RST_B;
 	u32 val_before, val_after;
 
 	dev_info(&dev->pdev->dev, "=== WFSYS Reset (addr=0x%08x) ===\n", addr);
+	dev_info(&dev->pdev->dev, "  Using remapped register access\n");
 
-	val_before = mt7927_rr(dev, addr);
+	val_before = mt7927_rr_remap(dev, addr);
 	dev_info(&dev->pdev->dev, "  Before reset: 0x%08x\n", val_before);
 
 	/* Check if already in good state */
@@ -449,9 +598,9 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 
 	/* Assert reset - clear WFSYS_SW_RST_B */
 	dev_info(&dev->pdev->dev, "  Asserting reset (clearing bit 0)...\n");
-	mt7927_clear(dev, addr, WFSYS_SW_RST_B);
+	mt7927_clear_remap(dev, addr, WFSYS_SW_RST_B);
 
-	val_after = mt7927_rr(dev, addr);
+	val_after = mt7927_rr_remap(dev, addr);
 	dev_info(&dev->pdev->dev, "  After clear: 0x%08x\n", val_after);
 
 	/* MANDATORY 50ms delay */
@@ -460,16 +609,16 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 
 	/* Deassert reset - set WFSYS_SW_RST_B */
 	dev_info(&dev->pdev->dev, "  Deasserting reset (setting bit 0)...\n");
-	mt7927_set(dev, addr, WFSYS_SW_RST_B);
+	mt7927_set_remap(dev, addr, WFSYS_SW_RST_B);
 
-	val_after = mt7927_rr(dev, addr);
+	val_after = mt7927_rr_remap(dev, addr);
 	dev_info(&dev->pdev->dev, "  After set: 0x%08x\n", val_after);
 
 	/* Poll for initialization complete (up to 500ms) */
 	dev_info(&dev->pdev->dev, "  Polling for INIT_DONE (bit 4)...\n");
 
-	if (!mt7927_poll(dev, addr, WFSYS_SW_INIT_DONE, WFSYS_SW_INIT_DONE, 500)) {
-		val_after = mt7927_rr(dev, addr);
+	if (!mt7927_poll_remap(dev, addr, WFSYS_SW_INIT_DONE, WFSYS_SW_INIT_DONE, 500)) {
+		val_after = mt7927_rr_remap(dev, addr);
 		dev_err(&dev->pdev->dev,
 			"  WFSYS reset TIMEOUT! Final value: 0x%08x\n", val_after);
 
@@ -480,12 +629,12 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 				 MT_WFSYS_SW_RST_B_ALT);
 
 			addr = MT_WFSYS_SW_RST_B_ALT;
-			mt7927_clear(dev, addr, WFSYS_SW_RST_B);
+			mt7927_clear_remap(dev, addr, WFSYS_SW_RST_B);
 			msleep(50);
-			mt7927_set(dev, addr, WFSYS_SW_RST_B);
+			mt7927_set_remap(dev, addr, WFSYS_SW_RST_B);
 
-			if (mt7927_poll(dev, addr, WFSYS_SW_INIT_DONE,
-					WFSYS_SW_INIT_DONE, 500)) {
+			if (mt7927_poll_remap(dev, addr, WFSYS_SW_INIT_DONE,
+					      WFSYS_SW_INIT_DONE, 500)) {
 				dev_info(&dev->pdev->dev,
 					 "  Alternative reset SUCCEEDED!\n");
 				return 0;
@@ -495,7 +644,7 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 		return -ETIMEDOUT;
 	}
 
-	val_after = mt7927_rr(dev, addr);
+	val_after = mt7927_rr_remap(dev, addr);
 	dev_info(&dev->pdev->dev, "  WFSYS reset COMPLETE: 0x%08x\n", val_after);
 
 	return 0;
@@ -733,8 +882,8 @@ static int mt7927_load_firmware(struct mt7927_dev *dev)
 
 	dev_info(&dev->pdev->dev, "  Firmware DMA buffer at %pad\n", &dev->fw_dma);
 
-	/* Check current firmware status */
-	status = mt7927_rr(dev, MT_CONN_ON_MISC);
+	/* Check current firmware status - use remapped access */
+	status = mt7927_rr_remap(dev, MT_CONN_ON_MISC);
 	dev_info(&dev->pdev->dev, "  MT_CONN_ON_MISC: 0x%08x\n", status);
 
 	/*
@@ -808,6 +957,11 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_free;
 	}
 
+	/* Get BAR0 size for bounds checking */
+	dev->regs_len = pci_resource_len(pdev, 0);
+	dev_info(&pdev->dev, "  BAR0 mapped: %pR (size: 0x%llx)\n",
+		 &pdev->resource[0], (unsigned long long)dev->regs_len);
+
 	dev->aspm_supported = pcie_aspm_enabled(pdev);
 
 	mt7927_dump_pci_state(dev);
@@ -846,9 +1000,10 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* === Phase 4: EMI Sleep Protection === */
 	dev_info(&pdev->dev, "\n=== Phase 4: EMI Sleep Protection ===\n");
 
-	mt7927_wr_debug(dev, MT_HW_EMI_CTL,
-			mt7927_rr(dev, MT_HW_EMI_CTL) | MT_HW_EMI_CTL_SLPPROT_EN,
-			"MT_HW_EMI_CTL");
+	/* EMI Control is at 0x18011100 - use remapped access */
+	dev_info(&pdev->dev, "  Setting EMI sleep protection via remap...\n");
+	mt7927_wr_remap(dev, MT_HW_EMI_CTL,
+			mt7927_rr_remap(dev, MT_HW_EMI_CTL) | MT_HW_EMI_CTL_SLPPROT_EN);
 
 	/* === Phase 5: WFSYS Reset === */
 	dev_info(&pdev->dev, "\n=== Phase 5: WFSYS Reset ===\n");
