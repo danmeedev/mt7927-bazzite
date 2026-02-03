@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.3.2"
+#define DRV_VERSION "0.3.3"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -164,6 +164,14 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 /* Firmware status */
 #define MT_CONN_ON_MISC			0x7c0600f0
 #define MT_TOP_MISC2_FW_N9_RDY		GENMASK(1, 0)
+
+/* Hardware identification registers (high address, need remap) */
+#define MT_HW_CHIPID			0x70010200
+#define MT_HW_REV			0x70010204
+
+/* EMI Control - CRITICAL: Must be configured before WFSYS reset! */
+#define MT_HW_EMI_CTL			0x18011100
+#define MT_HW_EMI_CTL_SLPPROT_EN	BIT(1)
 
 /* Additional debug registers */
 #define MT_HIF_REMAP_L1			0x155024
@@ -1151,10 +1159,20 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* === Phase 4: EMI Sleep Protection === */
 	dev_info(&pdev->dev, "\n=== Phase 4: EMI Sleep Protection ===\n");
 
-	/* EMI Control is at 0x18011100 - use remapped access */
-	dev_info(&pdev->dev, "  Setting EMI sleep protection via remap...\n");
-	mt7927_wr_remap(dev, MT_HW_EMI_CTL,
-			mt7927_rr_remap(dev, MT_HW_EMI_CTL) | MT_HW_EMI_CTL_SLPPROT_EN);
+	/*
+	 * CRITICAL: The kernel driver sets EMI sleep protection BEFORE WFSYS reset.
+	 * EMI Control is at 0x18011100 - needs remapped access.
+	 * Set bit 1 (SLPPROT_EN) to enable sleep protection.
+	 */
+	dev_info(&pdev->dev, "  Enabling EMI sleep protection (0x%08x)...\n", MT_HW_EMI_CTL);
+	{
+		u32 emi_val = mt7927_rr_remap(dev, MT_HW_EMI_CTL);
+		dev_info(&pdev->dev, "  EMI_CTL before: 0x%08x\n", emi_val);
+		mt7927_wr_remap(dev, MT_HW_EMI_CTL, emi_val | MT_HW_EMI_CTL_SLPPROT_EN);
+		emi_val = mt7927_rr_remap(dev, MT_HW_EMI_CTL);
+		dev_info(&pdev->dev, "  EMI_CTL after:  0x%08x (SLPPROT_EN=%d)\n",
+			 emi_val, !!(emi_val & MT_HW_EMI_CTL_SLPPROT_EN));
+	}
 
 	/* === Phase 5: WFSYS Reset === */
 	dev_info(&pdev->dev, "\n=== Phase 5: WFSYS Reset ===\n");
