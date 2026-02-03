@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.2.1"
+#define DRV_VERSION "0.2.2"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -137,7 +137,7 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
  * =============================================================================
  */
 
-#define MT792x_DRV_OWN_RETRY_COUNT	10
+#define MT792x_DRV_OWN_RETRY_COUNT	3	/* Reduced for faster debug feedback */
 #define MT7927_TX_RING_SIZE		2048
 #define MT7927_TX_MCU_RING_SIZE		256
 #define MT7927_TX_FWDL_RING_SIZE	128
@@ -443,24 +443,32 @@ static void mt7927_dump_critical_regs(struct mt7927_dev *dev)
  * =============================================================================
  */
 
-/* Helper to poll a remapped register */
-static bool mt7927_poll_remap(struct mt7927_dev *dev, u32 addr, u32 mask,
-			      u32 val, int timeout_ms)
+/* Helper to poll a remapped register - silent version to avoid log spam */
+static bool mt7927_poll_remap_quiet(struct mt7927_dev *dev, u32 addr, u32 mask,
+				    u32 val, int timeout_ms)
 {
 	u32 cur;
 	int i;
+	bool saved_debug = debug_regs;
+
+	/* Temporarily disable debug to avoid flooding logs during polling */
+	debug_regs = false;
 
 	for (i = 0; i < timeout_ms; i++) {
 		cur = mt7927_rr_remap(dev, addr);
-		if ((cur & mask) == val)
+		if ((cur & mask) == val) {
+			debug_regs = saved_debug;
 			return true;
+		}
 		usleep_range(1000, 2000);
 	}
 
+	debug_regs = saved_debug;
+
 	if (debug_regs)
 		dev_warn(&dev->pdev->dev,
-			 "  POLL REMAP TIMEOUT [0x%08x] mask=0x%08x expected=0x%08x got=0x%08x\n",
-			 addr, mask, val, cur);
+			 "  POLL TIMEOUT [0x%08x] mask=0x%08x expected=0x%08x got=0x%08x after %dms\n",
+			 addr, mask, val, cur, timeout_ms);
 
 	return false;
 }
@@ -473,14 +481,15 @@ static int mt7927_mcu_fw_pmctrl(struct mt7927_dev *dev)
 	dev_info(&dev->pdev->dev, "=== FW Power Control (give to firmware) ===\n");
 	dev_info(&dev->pdev->dev, "  Using remapped register access for 0x7c0xxxxx\n");
 
-	/* Use remapped access for high addresses */
+	/* Use remapped access for high addresses - quick poll (10ms) for debug */
 	for (i = 0; i < MT792x_DRV_OWN_RETRY_COUNT; i++) {
 		u32 val_before = mt7927_rr_remap(dev, addr);
 
+		dev_info(&dev->pdev->dev, "  [%d] Writing SET_OWN to 0x%08x...\n", i + 1, addr);
 		mt7927_wr_remap(dev, addr, PCIE_LPCR_HOST_SET_OWN);
 
-		if (mt7927_poll_remap(dev, addr, PCIE_LPCR_HOST_OWN_SYNC,
-				      PCIE_LPCR_HOST_OWN_SYNC, 50)) {
+		if (mt7927_poll_remap_quiet(dev, addr, PCIE_LPCR_HOST_OWN_SYNC,
+				      PCIE_LPCR_HOST_OWN_SYNC, 10)) {
 			dev_info(&dev->pdev->dev,
 				 "  FW ownership acquired (attempt %d, addr=0x%08x)\n",
 				 i + 1, addr);
@@ -490,19 +499,19 @@ static int mt7927_mcu_fw_pmctrl(struct mt7927_dev *dev)
 			return 0;
 		}
 
-		dev_info(&dev->pdev->dev, "  Attempt %d failed at addr 0x%08x\n",
-			 i + 1, addr);
+		dev_info(&dev->pdev->dev, "  [%d] Timeout at addr 0x%08x\n", i + 1, addr);
 	}
 
 	/* Try alternative address */
-	dev_info(&dev->pdev->dev, "  Trying alternative LPCTL address...\n");
+	dev_info(&dev->pdev->dev, "  Trying alternative LPCTL address 0x%08x...\n",
+		 MT_CONN_ON_LPCTL_ALT);
 	addr = MT_CONN_ON_LPCTL_ALT;
 
 	for (i = 0; i < MT792x_DRV_OWN_RETRY_COUNT; i++) {
 		mt7927_wr_remap(dev, addr, PCIE_LPCR_HOST_SET_OWN);
 
-		if (mt7927_poll_remap(dev, addr, PCIE_LPCR_HOST_OWN_SYNC,
-				      PCIE_LPCR_HOST_OWN_SYNC, 50)) {
+		if (mt7927_poll_remap_quiet(dev, addr, PCIE_LPCR_HOST_OWN_SYNC,
+				      PCIE_LPCR_HOST_OWN_SYNC, 10)) {
 			dev_info(&dev->pdev->dev,
 				 "  FW ownership acquired via ALT address 0x%08x\n", addr);
 			return 0;
@@ -521,16 +530,18 @@ static int mt7927_mcu_drv_pmctrl(struct mt7927_dev *dev)
 	dev_info(&dev->pdev->dev, "=== Driver Power Control (take ownership) ===\n");
 	dev_info(&dev->pdev->dev, "  Using remapped register access for 0x7c0xxxxx\n");
 
+	/* Quick poll (10ms) for debug */
 	for (i = 0; i < MT792x_DRV_OWN_RETRY_COUNT; i++) {
 		u32 val_before = mt7927_rr_remap(dev, addr);
 
+		dev_info(&dev->pdev->dev, "  [%d] Writing CLR_OWN to 0x%08x...\n", i + 1, addr);
 		mt7927_wr_remap(dev, addr, PCIE_LPCR_HOST_CLR_OWN);
 
 		/* Critical delay for ASPM */
 		if (dev->aspm_supported || disable_aspm)
 			usleep_range(2000, 3000);
 
-		if (mt7927_poll_remap(dev, addr, PCIE_LPCR_HOST_OWN_SYNC, 0, 50)) {
+		if (mt7927_poll_remap_quiet(dev, addr, PCIE_LPCR_HOST_OWN_SYNC, 0, 10)) {
 			dev_info(&dev->pdev->dev,
 				 "  Driver ownership acquired (attempt %d)\n", i + 1);
 			dev_info(&dev->pdev->dev,
@@ -539,12 +550,13 @@ static int mt7927_mcu_drv_pmctrl(struct mt7927_dev *dev)
 			return 0;
 		}
 
-		dev_info(&dev->pdev->dev, "  Attempt %d: LPCTL=0x%08x\n",
+		dev_info(&dev->pdev->dev, "  [%d] Timeout, LPCTL=0x%08x\n",
 			 i + 1, mt7927_rr_remap(dev, addr));
 	}
 
 	/* Try alternative address */
-	dev_info(&dev->pdev->dev, "  Trying alternative LPCTL address...\n");
+	dev_info(&dev->pdev->dev, "  Trying alternative LPCTL address 0x%08x...\n",
+		 MT_CONN_ON_LPCTL_ALT);
 	addr = MT_CONN_ON_LPCTL_ALT;
 
 	for (i = 0; i < MT792x_DRV_OWN_RETRY_COUNT; i++) {
@@ -553,7 +565,7 @@ static int mt7927_mcu_drv_pmctrl(struct mt7927_dev *dev)
 		if (dev->aspm_supported)
 			usleep_range(2000, 3000);
 
-		if (mt7927_poll_remap(dev, addr, PCIE_LPCR_HOST_OWN_SYNC, 0, 50)) {
+		if (mt7927_poll_remap_quiet(dev, addr, PCIE_LPCR_HOST_OWN_SYNC, 0, 10)) {
 			dev_info(&dev->pdev->dev,
 				 "  Driver ownership via ALT address 0x%08x\n", addr);
 			return 0;
@@ -614,10 +626,10 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 	val_after = mt7927_rr_remap(dev, addr);
 	dev_info(&dev->pdev->dev, "  After set: 0x%08x\n", val_after);
 
-	/* Poll for initialization complete (up to 500ms) */
-	dev_info(&dev->pdev->dev, "  Polling for INIT_DONE (bit 4)...\n");
+	/* Poll for initialization complete (100ms for debug, prod should be 500ms) */
+	dev_info(&dev->pdev->dev, "  Polling for INIT_DONE (bit 4), timeout 100ms...\n");
 
-	if (!mt7927_poll_remap(dev, addr, WFSYS_SW_INIT_DONE, WFSYS_SW_INIT_DONE, 500)) {
+	if (!mt7927_poll_remap_quiet(dev, addr, WFSYS_SW_INIT_DONE, WFSYS_SW_INIT_DONE, 100)) {
 		val_after = mt7927_rr_remap(dev, addr);
 		dev_err(&dev->pdev->dev,
 			"  WFSYS reset TIMEOUT! Final value: 0x%08x\n", val_after);
@@ -633,14 +645,15 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 			msleep(50);
 			mt7927_set_remap(dev, addr, WFSYS_SW_RST_B);
 
-			if (mt7927_poll_remap(dev, addr, WFSYS_SW_INIT_DONE,
-					      WFSYS_SW_INIT_DONE, 500)) {
+			if (mt7927_poll_remap_quiet(dev, addr, WFSYS_SW_INIT_DONE,
+					      WFSYS_SW_INIT_DONE, 100)) {
 				dev_info(&dev->pdev->dev,
 					 "  Alternative reset SUCCEEDED!\n");
 				return 0;
 			}
 		}
 
+		dev_info(&dev->pdev->dev, "  Continuing despite reset failure for debugging...\n");
 		return -ETIMEDOUT;
 	}
 
