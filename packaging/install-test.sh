@@ -89,7 +89,16 @@ echo ""
 
 # Build driver
 echo "[6/6] Building and loading driver..."
-cd "$SCRIPT_DIR/driver"
+
+# Copy source to /tmp to avoid path issues with spaces/special chars
+# (kernel build system doesn't handle paths with spaces or parentheses)
+BUILD_DIR="/tmp/mt7927-build-$$"
+echo "  Copying source to $BUILD_DIR (avoids path issues)..."
+rm -rf "$BUILD_DIR"
+mkdir -p "$BUILD_DIR"
+cp "$SCRIPT_DIR/driver"/* "$BUILD_DIR/"
+
+cd "$BUILD_DIR"
 
 echo "  Cleaning previous build..."
 make clean 2>/dev/null || true
@@ -110,7 +119,7 @@ echo ""
 
 # Load driver with debug enabled
 echo "Loading MT7927 driver (debug mode)..."
-insmod mt7927.ko debug_regs=1
+insmod "$BUILD_DIR/mt7927.ko" debug_regs=1
 
 echo ""
 echo "Driver loaded! Checking status..."
