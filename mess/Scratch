@@ -24,26 +24,26 @@ All changes there will be discarded on reboot.
   Downloading WIFI_RAM_CODE_MT7925_1_1.bin...
   Firmware installed to /usr/lib/firmware/mediatek/mt7925
 total 3176
-drwxr-xr-x. 1 root root     122 Feb  3 13:43 .
+drwxr-xr-x. 1 root root     122 Feb  3 13:52 .
 drwxr-xr-x. 1 root root      12 Dec 31  1969 ..
 -rw-r--r--. 3 root root  459588 Dec 31  1969 BT_RAM_CODE_MT7925_1_1_hdr.bin.xz
--rw-r--r--. 1 root root  197792 Feb  3 13:43 WIFI_MT7925_PATCH_MCU_1_1_hdr.bin
+-rw-r--r--. 1 root root  197792 Feb  3 13:52 WIFI_MT7925_PATCH_MCU_1_1_hdr.bin
 -rw-r--r--. 3 root root  197868 Dec 31  1969 WIFI_MT7925_PATCH_MCU_1_1_hdr.bin.xz
--rw-r--r--. 1 root root 1246968 Feb  3 13:43 WIFI_RAM_CODE_MT7925_1_1.bin
+-rw-r--r--. 1 root root 1246968 Feb  3 13:52 WIFI_RAM_CODE_MT7925_1_1.bin
 -rw-r--r--. 3 root root 1127480 Dec 31  1969 WIFI_RAM_CODE_MT7925_1_1.bin.xz
 
 [6/6] Building and loading driver...
-  Copying source to /tmp/mt7927-build-7086 (avoids path issues)...
+  Copying source to /tmp/mt7927-build-3364 (avoids path issues)...
   Cleaning previous build...
-make -C /lib/modules/6.17.7-ba25.fc43.x86_64/build M=/tmp/mt7927-build-7086 clean
+make -C /lib/modules/6.17.7-ba25.fc43.x86_64/build M=/tmp/mt7927-build-3364 clean
 make[1]: Entering directory '/usr/src/kernels/6.17.7-ba25.fc43.x86_64'
-make[2]: Entering directory '/tmp/mt7927-build-7086'
-make[2]: Leaving directory '/tmp/mt7927-build-7086'
+make[2]: Entering directory '/tmp/mt7927-build-3364'
+make[2]: Leaving directory '/tmp/mt7927-build-3364'
 make[1]: Leaving directory '/usr/src/kernels/6.17.7-ba25.fc43.x86_64'
   Building driver...
-make -C /lib/modules/6.17.7-ba25.fc43.x86_64/build M=/tmp/mt7927-build-7086 modules
+make -C /lib/modules/6.17.7-ba25.fc43.x86_64/build M=/tmp/mt7927-build-3364 modules
 make[1]: Entering directory '/usr/src/kernels/6.17.7-ba25.fc43.x86_64'
-make[2]: Entering directory '/tmp/mt7927-build-7086'
+make[2]: Entering directory '/tmp/mt7927-build-3364'
   CC [M]  mt7927.o
   MODPOST Module.symvers
   CC [M]  mt7927.mod.o
@@ -51,7 +51,7 @@ make[2]: Entering directory '/tmp/mt7927-build-7086'
   LD [M]  mt7927.ko
   BTF [M] mt7927.ko
 Skipping BTF generation for mt7927.ko due to unavailability of vmlinux
-make[2]: Leaving directory '/tmp/mt7927-build-7086'
+make[2]: Leaving directory '/tmp/mt7927-build-3364'
 make[1]: Leaving directory '/usr/src/kernels/6.17.7-ba25.fc43.x86_64'
 
 Removing conflicting drivers...
@@ -63,344 +63,339 @@ Driver loaded! Checking status...
 ==========================================
 DMESG OUTPUT (last 50 lines with mt7927):
 ==========================================
-[ 1824.281578] mt7927 0000:06:00.0:   RX Ring 0 (MCU Events)...
-[ 1824.281585] mt7927 0000:06:00.0:   WRITE [0x000d4680] RX_RING0_EXT_CTRL: 0x00000000 -> write 0x01000004 -> read 0x00000000 MISMATCH!
-[ 1824.281587] mt7927 0000:06:00.0:   RX Ring 1 (WM Events)...
-[ 1824.281593] mt7927 0000:06:00.0:   WRITE [0x000d4684] RX_RING1_EXT_CTRL: 0x00000000 -> write 0x01400004 -> read 0x00000000 MISMATCH!
-[ 1824.281596] mt7927 0000:06:00.0:   RX Ring 2 (Data)...
-[ 1824.281602] mt7927 0000:06:00.0:   WRITE [0x000d4688] RX_RING2_EXT_CTRL: 0x00000000 -> write 0x01800004 -> read 0x00000000 MISMATCH!
-[ 1824.281604] mt7927 0000:06:00.0:   RX Ring 3 (Data)...
-[ 1824.281610] mt7927 0000:06:00.0:   WRITE [0x000d468c] RX_RING3_EXT_CTRL: 0x00000000 -> write 0x01c00004 -> read 0x00000000 MISMATCH!
-[ 1824.281613] mt7927 0000:06:00.0:   DMA prefetch configuration complete
-[ 1824.281615] mt7927 0000:06:00.0:   Disabling clock gating before ring config...
-[ 1824.281618] mt7927 0000:06:00.0:   GLO_CFG before CLK_GAT_DIS: 0x0010a870
-[ 1824.281625] mt7927 0000:06:00.0:   GLO_CFG after CLK_GAT_DIS:  0x4010a870
-[ 1824.281634] mt7927 0000:06:00.0:   TX ring allocated: 128 descriptors at 0x00000000fffff000
-[ 1824.281637] mt7927 0000:06:00.0:   Configuring FWDL ring (ring 16)...
-[ 1824.281643] mt7927 0000:06:00.0:   WRITE [0x000d4400] RING16_BASE: 0x00000000 -> write 0xfffff000 -> read 0x00000000 MISMATCH!
-[ 1824.281651] mt7927 0000:06:00.0:   WRITE [0x000d4404] RING16_CNT: 0x00000200 -> write 0x00000080 -> read 0x00000200 MISMATCH!
-[ 1824.281658] mt7927 0000:06:00.0:   WRITE [0x000d4408] RING16_CIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
-[ 1824.281665] mt7927 0000:06:00.0:   WRITE [0x000d440c] RING16_DIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
-[ 1824.281667] mt7927 0000:06:00.0: === DMA Enable ===
-[ 1824.281669] mt7927 0000:06:00.0:   Resetting DMA pointers...
-[ 1824.281674] mt7927 0000:06:00.0:   GLO_CFG before enable: 0x4010a870
-[ 1824.281676] mt7927 0000:06:00.0:   Setting config flags: 0x50209070
-[ 1824.281682] mt7927 0000:06:00.0:   GLO_CFG after config: 0x5030b870
-[ 1824.281684] mt7927 0000:06:00.0:   Enabling TX/RX DMA...
-[ 1824.281690] mt7927 0000:06:00.0:   GLO_CFG final: 0x5030b875
-[ 1824.281692] mt7927 0000:06:00.0:
-[ 1824.281696] mt7927 0000:06:00.0:   WPDMA_GLO_CFG final: 0x5030b875
-[ 1824.281697] mt7927 0000:06:00.0:   GLO_CFG has value - registers may be writable
-[ 1824.281699] mt7927 0000:06:00.0: === Critical Register Dump ===
-[ 1824.281701] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
-[ 1824.281706] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
-[ 1824.281711] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
-[ 1824.281715] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
-[ 1824.281719] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
-[ 1824.281723] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
-[ 1824.281727] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
-[ 1824.281731] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
-[ 1824.281736] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
-[ 1824.281738] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
-[ 1824.281740] mt7927 0000:06:00.0:
-[ 1824.281741] mt7927 0000:06:00.0: === Firmware Loading ===
-[ 1824.285019] mt7927 0000:06:00.0:   Patch firmware loaded: 197792 bytes
-[ 1824.285048] mt7927 0000:06:00.0:   Firmware DMA buffer at 0x00000000fffc0000
-[ 1824.285056] mt7927 0000:06:00.0:   REMAP READ [0x7c0600f0] = 0x00000000 (window: base=0x7c060000, off=0xf0)
-[ 1824.285059] mt7927 0000:06:00.0:   MT_CONN_ON_MISC: 0x00000000
-[ 1824.285061] mt7927 0000:06:00.0:
-[ 1824.285062] mt7927 0000:06:00.0: # MT7927 Driver Initialization Complete
-[ 1824.285064] mt7927 0000:06:00.0: # Status: Device bound, debugging enabled
-[ 1824.285066] mt7927 0000:06:00.0: # Next: Check dmesg for register values
-[ 1824.285068] mt7927 0000:06:00.0: ############################################
-
-==========================================
-Installation complete (TEMPORARY)
-
+[  140.526532] mt7927 0000:06:00.0:   RX Ring 0 (MCU Events)...
+[  140.526538] mt7927 0000:06:00.0:   WRITE [0x000d4680] RX_RING0_EXT_CTRL: 0x00000000 -> write 0x01000004 -> read 0x00000000 MISMATCH!
+[  140.526541] mt7927 0000:06:00.0:   RX Ring 1 (WM Events)...
+[  140.526547] mt7927 0000:06:00.0:   WRITE [0x000d4684] RX_RING1_EXT_CTRL: 0x00000000 -> write 0x01400004 -> read 0x00000000 MISMATCH!
+[  140.526549] mt7927 0000:06:00.0:   RX Ring 2 (Data)...
+[  140.526555] mt7927 0000:06:00.0:   WRITE [0x000d4688] RX_RING2_EXT_CTRL: 0x00000000 -> write 0x01800004 -> read 0x00000000 MISMATCH!
+[  140.526558] mt7927 0000:06:00.0:   RX Ring 3 (Data)...
+[  140.526564] mt7927 0000:06:00.0:   WRITE [0x000d468c] RX_RING3_EXT_CTRL: 0x00000000 -> write 0x01c00004 -> read 0x00000000 MISMATCH!
+[  140.526566] mt7927 0000:06:00.0:   DMA prefetch configuration complete
+[  140.526568] mt7927 0000:06:00.0:   Disabling clock gating before ring config...
+[  140.526572] mt7927 0000:06:00.0:   GLO_CFG before CLK_GAT_DIS: 0x0010a870
+[  140.526578] mt7927 0000:06:00.0:   GLO_CFG after CLK_GAT_DIS:  0x4010a870
+[  140.526588] mt7927 0000:06:00.0:   TX ring allocated: 128 descriptors at 0x00000000fffff000
+[  140.526591] mt7927 0000:06:00.0:   Configuring FWDL ring (ring 16)...
+[  140.526597] mt7927 0000:06:00.0:   WRITE [0x000d4400] RING16_BASE: 0x00000000 -> write 0xfffff000 -> read 0x00000000 MISMATCH!
+[  140.526605] mt7927 0000:06:00.0:   WRITE [0x000d4404] RING16_CNT: 0x00000200 -> write 0x00000080 -> read 0x00000200 MISMATCH!
+[  140.526612] mt7927 0000:06:00.0:   WRITE [0x000d4408] RING16_CIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  140.526619] mt7927 0000:06:00.0:   WRITE [0x000d440c] RING16_DIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  140.526621] mt7927 0000:06:00.0: === DMA Enable ===
+[  140.526623] mt7927 0000:06:00.0:   Resetting DMA pointers...
+[  140.526628] mt7927 0000:06:00.0:   GLO_CFG before enable: 0x4010a870
+[  140.526630] mt7927 0000:06:00.0:   Setting config flags: 0x50209070
+[  140.526636] mt7927 0000:06:00.0:   GLO_CFG after config: 0x5030b870
+[  140.526638] mt7927 0000:06:00.0:   Enabling TX/RX DMA...
+[  140.526644] mt7927 0000:06:00.0:   GLO_CFG final: 0x5030b875
+[  140.526646] mt7927 0000:06:00.0:
+[  140.526650] mt7927 0000:06:00.0:   WPDMA_GLO_CFG final: 0x5030b875
+[  140.526652] mt7927 0000:06:00.0:   GLO_CFG has value - registers may be writable
+[  140.526654] mt7927 0000:06:00.0: === Critical Register Dump ===
+[  140.526655] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
+[  140.526660] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
+[  140.526665] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
+[  140.526669] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
+[  140.526673] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
+[  140.526678] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
+[  140.526682] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
+[  140.526686] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
+[  140.526690] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
+[  140.526692] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
+[  140.526694] mt7927 0000:06:00.0:
+[  140.526696] mt7927 0000:06:00.0: === Firmware Loading ===
+[  140.530060] mt7927 0000:06:00.0:   Patch firmware loaded: 197792 bytes
+[  140.530093] mt7927 0000:06:00.0:   Firmware DMA buffer at 0x00000000fffc0000
+[  140.530101] mt7927 0000:06:00.0:   REMAP READ [0x7c0600f0] = 0x00000000 (window: base=0x7c060000, off=0xf0)
+[  140.530104] mt7927 0000:06:00.0:   MT_CONN_ON_MISC: 0x00000000
+[  140.530106] mt7927 0000:06:00.0:
+[  140.530108] mt7927 0000:06:00.0: # MT7927 Driver Initialization Complete
+[  140.530110] mt7927 0000:06:00.0: # Status: Device bound, debugging enabled
+[  140.530111] mt7927 0000:06:00.0: # Next: Check dmesg for register values
+[  140.530113] mt7927 0000:06:00.0: ############################################
 
 xan517@bazzite:~/driver/mt7927-bazzite/packaging$ sudo dmesg | grep mt7927
-[ 1824.111646] mt7927: module verification failed: signature and/or required key missing - tainting kernel
-[ 1824.112175] mt7927 0000:06:00.0:
-[ 1824.112178] mt7927 0000:06:00.0: ############################################
-[ 1824.112180] mt7927 0000:06:00.0: # MT7927 WiFi 7 Driver v0.3.0
-[ 1824.112182] mt7927 0000:06:00.0: # Device: 14c3:7927 (AMD RZ738 compatible)
-[ 1824.112184] mt7927 0000:06:00.0: ############################################
-[ 1824.112186] mt7927 0000:06:00.0:
-[ 1824.112194] mt7927 0000:06:00.0: enabling device (0000 -> 0002)
-[ 1824.112295] mt7927 0000:06:00.0:   BAR0 mapped: [mem 0xfb200000-0xfb3fffff 64bit] (size: 0x200000)
-[ 1824.112300] mt7927 0000:06:00.0: === PCI State Dump ===
-[ 1824.112308] mt7927 0000:06:00.0:   PCI Command: 0x0006 (MEM=1, MASTER=1)
-[ 1824.112311] mt7927 0000:06:00.0:   PCI Status:  0x0010
-[ 1824.112313] mt7927 0000:06:00.0:   BAR0: 0xfb200004 (len=2048 KB), BAR2: 0xfb400004
-[ 1824.112316] mt7927 0000:06:00.0:   Subsystem: 105b:e104
-[ 1824.112318] mt7927 0000:06:00.0:   MMIO range: 0x00000000 - 0x001fffff
-[ 1824.112320] mt7927 0000:06:00.0:   WARNING: BAR0 too small for high registers!
-[ 1824.112322] mt7927 0000:06:00.0:   Registers like 0x7c060010 are OUT OF RANGE
-[ 1824.112323] mt7927 0000:06:00.0:
-[ 1824.112325] mt7927 0000:06:00.0: === Critical Register Dump ===
-[ 1824.112327] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
-[ 1824.112332] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
-[ 1824.112337] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
-[ 1824.112341] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x4010a870
-[ 1824.112345] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
-[ 1824.112349] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
-[ 1824.112353] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
-[ 1824.112358] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
-[ 1824.112362] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
-[ 1824.112364] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
-[ 1824.112366] mt7927 0000:06:00.0:
-[ 1824.112368] mt7927 0000:06:00.0: === FW Power Control (give to firmware) ===
-[ 1824.112369] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
-[ 1824.112376] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.112379] mt7927 0000:06:00.0:   [1] Writing SET_OWN to 0x7c060010...
-[ 1824.112384] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
-[ 1824.131403] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.131408] mt7927 0000:06:00.0:   [1] Timeout at addr 0x7c060010
-[ 1824.131416] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.131419] mt7927 0000:06:00.0:   [2] Writing SET_OWN to 0x7c060010...
-[ 1824.131424] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
-[ 1824.151484] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.151489] mt7927 0000:06:00.0:   [2] Timeout at addr 0x7c060010
-[ 1824.151497] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.151500] mt7927 0000:06:00.0:   [3] Writing SET_OWN to 0x7c060010...
-[ 1824.151505] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
-[ 1824.170469] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.170474] mt7927 0000:06:00.0:   [3] Timeout at addr 0x7c060010
-[ 1824.170477] mt7927 0000:06:00.0:   Trying alternative LPCTL address 0x18060010...
-[ 1824.170482] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
-[ 1824.190513] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.190520] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
-[ 1824.210621] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.210627] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
-[ 1824.230478] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.230483] mt7927 0000:06:00.0:   FW ownership handoff failed (non-fatal)
-[ 1824.230485] mt7927 0000:06:00.0: FW ownership handoff failed (continuing)
-[ 1824.230487] mt7927 0000:06:00.0: === Driver Power Control (take ownership) ===
-[ 1824.230488] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
-[ 1824.230495] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.230497] mt7927 0000:06:00.0:   [1] Writing CLR_OWN to 0x7c060010...
-[ 1824.230502] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000002 (window: base=0x7c060000, off=0x10)
-[ 1824.230510] mt7927 0000:06:00.0:   Driver ownership acquired (attempt 1)
-[ 1824.230516] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.230519] mt7927 0000:06:00.0:   LPCTL: 0x000001d2 -> 0x000001d2
-[ 1824.230521] mt7927 0000:06:00.0:
-[ 1824.230523] mt7927 0000:06:00.0:   Reading Chip ID via remap (0x70010200)...
-[ 1824.230529] mt7927 0000:06:00.0:   REMAP READ [0x70010200] = 0x7fff0000 (window: base=0x70010000, off=0x200)
-[ 1824.230536] mt7927 0000:06:00.0:   REMAP READ [0x70010204] = 0x00000000 (window: base=0x70010000, off=0x204)
-[ 1824.230539] mt7927 0000:06:00.0:   Chip ID: 0x7fff0000
-[ 1824.230541] mt7927 0000:06:00.0:   Chip Rev: 0x00000000
-[ 1824.230543] mt7927 0000:06:00.0:
-[ 1824.230544] mt7927 0000:06:00.0:   Setting EMI sleep protection via remap...
-[ 1824.230551] mt7927 0000:06:00.0:   REMAP READ [0x18011100] = 0x00000002 (window: base=0x18010000, off=0x1100)
-[ 1824.230556] mt7927 0000:06:00.0:   REMAP WRITE [0x18011100] = 0x00000002 (window: base=0x18010000, off=0x1100)
-[ 1824.230559] mt7927 0000:06:00.0:
-[ 1824.230560] mt7927 0000:06:00.0: === WFSYS Reset (addr=0x7c000140) ===
-[ 1824.230562] mt7927 0000:06:00.0:   Using remapped register access
-[ 1824.230569] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.230571] mt7927 0000:06:00.0:   Before reset: 0x00000011
-[ 1824.230573] mt7927 0000:06:00.0:   INIT_DONE already set, still resetting...
-[ 1824.230575] mt7927 0000:06:00.0:   Asserting reset (clearing bit 0)...
-[ 1824.230581] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.230587] mt7927 0000:06:00.0:   REMAP WRITE [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
-[ 1824.230594] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
-[ 1824.230596] mt7927 0000:06:00.0:   After clear: 0x00000010
-[ 1824.230598] mt7927 0000:06:00.0:   Waiting 50ms...
-[ 1824.281405] mt7927 0000:06:00.0:   Deasserting reset (setting bit 0)...
-[ 1824.281413] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
-[ 1824.281418] mt7927 0000:06:00.0:   REMAP WRITE [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.281426] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.281428] mt7927 0000:06:00.0:   After set: 0x00000011
-[ 1824.281430] mt7927 0000:06:00.0:   Polling for INIT_DONE (bit 4), timeout 100ms...
-[ 1824.281441] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.281444] mt7927 0000:06:00.0:   WFSYS reset COMPLETE: 0x00000011
-[ 1824.281446] mt7927 0000:06:00.0:
-[ 1824.281452] mt7927 0000:06:00.0:   WRITE [0x000d4204] HOST_INT_ENA: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
-[ 1824.281461] mt7927 0000:06:00.0:   WRITE [0x00010188] PCIE_MAC_INT_EN: 0x000000ff -> write 0x000000ff -> read 0x000000ff OK
-[ 1824.281464] mt7927 0000:06:00.0:
-[ 1824.281466] mt7927 0000:06:00.0: === DMA Initialization ===
-[ 1824.281468] mt7927 0000:06:00.0: === DMA Disable (force=1) ===
-[ 1824.281472] mt7927 0000:06:00.0:   GLO_CFG before: 0x1010b870
-[ 1824.281478] mt7927 0000:06:00.0:   GLO_CFG after clear: 0x0010a870
-[ 1824.281480] mt7927 0000:06:00.0:   Waiting for DMA busy to clear...
-[ 1824.281484] mt7927 0000:06:00.0:   Disabling DMASHDL...
-[ 1824.281492] mt7927 0000:06:00.0:   WRITE [0x000d42b0] GLO_CFG_EXT0: 0x28c004df -> write 0x28c004df -> read 0x28c004df OK
-[ 1824.281494] mt7927 0000:06:00.0:   Setting DMASHDL bypass via remap...
-[ 1824.281501] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
-[ 1824.281506] mt7927 0000:06:00.0:   REMAP WRITE [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
-[ 1824.281514] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
-[ 1824.281516] mt7927 0000:06:00.0:   DMASHDL_SW_CONTROL: 0x00000001 -> 0x00000001
-[ 1824.281518] mt7927 0000:06:00.0:   Force reset sequence...
-[ 1824.281529] mt7927 0000:06:00.0:   WFDMA0_RST: 0x00000000
-[ 1824.281531] mt7927 0000:06:00.0: === DMA Prefetch Configuration ===
-[ 1824.281532] mt7927 0000:06:00.0:   TX Ring 0 (Data)...
-[ 1824.281538] mt7927 0000:06:00.0:   WRITE [0x000d4600] TX_RING0_EXT_CTRL: 0x00000000 -> write 0x00000004 -> read 0x00000000 MISMATCH!
-[ 1824.281541] mt7927 0000:06:00.0:   TX Ring 1 (Data)...
-[ 1824.281547] mt7927 0000:06:00.0:   WRITE [0x000d4604] TX_RING1_EXT_CTRL: 0x00000000 -> write 0x00400004 -> read 0x00000000 MISMATCH!
-[ 1824.281550] mt7927 0000:06:00.0:   TX Ring 2 (Data)...
-[ 1824.281556] mt7927 0000:06:00.0:   WRITE [0x000d4608] TX_RING2_EXT_CTRL: 0x00000000 -> write 0x00800004 -> read 0x00000000 MISMATCH!
-[ 1824.281559] mt7927 0000:06:00.0:   TX Ring 15 (MCU WM)...
-[ 1824.281567] mt7927 0000:06:00.0:   WRITE [0x000d463c] TX_RING15_EXT_CTRL: 0x00000000 -> write 0x05000004 -> read 0x00000000 MISMATCH!
-[ 1824.281570] mt7927 0000:06:00.0:   TX Ring 16 (FWDL)...
-[ 1824.281576] mt7927 0000:06:00.0:   WRITE [0x000d4640] TX_RING16_EXT_CTRL: 0x00000000 -> write 0x05400004 -> read 0x00000000 MISMATCH!
-[ 1824.281578] mt7927 0000:06:00.0:   RX Ring 0 (MCU Events)...
-[ 1824.281585] mt7927 0000:06:00.0:   WRITE [0x000d4680] RX_RING0_EXT_CTRL: 0x00000000 -> write 0x01000004 -> read 0x00000000 MISMATCH!
-[ 1824.281587] mt7927 0000:06:00.0:   RX Ring 1 (WM Events)...
-[ 1824.281593] mt7927 0000:06:00.0:   WRITE [0x000d4684] RX_RING1_EXT_CTRL: 0x00000000 -> write 0x01400004 -> read 0x00000000 MISMATCH!
-[ 1824.281596] mt7927 0000:06:00.0:   RX Ring 2 (Data)...
-[ 1824.281602] mt7927 0000:06:00.0:   WRITE [0x000d4688] RX_RING2_EXT_CTRL: 0x00000000 -> write 0x01800004 -> read 0x00000000 MISMATCH!
-[ 1824.281604] mt7927 0000:06:00.0:   RX Ring 3 (Data)...
-[ 1824.281610] mt7927 0000:06:00.0:   WRITE [0x000d468c] RX_RING3_EXT_CTRL: 0x00000000 -> write 0x01c00004 -> read 0x00000000 MISMATCH!
-[ 1824.281613] mt7927 0000:06:00.0:   DMA prefetch configuration complete
-[ 1824.281615] mt7927 0000:06:00.0:   Disabling clock gating before ring config...
-[ 1824.281618] mt7927 0000:06:00.0:   GLO_CFG before CLK_GAT_DIS: 0x0010a870
-[ 1824.281625] mt7927 0000:06:00.0:   GLO_CFG after CLK_GAT_DIS:  0x4010a870
-[ 1824.281634] mt7927 0000:06:00.0:   TX ring allocated: 128 descriptors at 0x00000000fffff000
-[ 1824.281637] mt7927 0000:06:00.0:   Configuring FWDL ring (ring 16)...
-[ 1824.281643] mt7927 0000:06:00.0:   WRITE [0x000d4400] RING16_BASE: 0x00000000 -> write 0xfffff000 -> read 0x00000000 MISMATCH!
-[ 1824.281651] mt7927 0000:06:00.0:   WRITE [0x000d4404] RING16_CNT: 0x00000200 -> write 0x00000080 -> read 0x00000200 MISMATCH!
-[ 1824.281658] mt7927 0000:06:00.0:   WRITE [0x000d4408] RING16_CIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
-[ 1824.281665] mt7927 0000:06:00.0:   WRITE [0x000d440c] RING16_DIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
-[ 1824.281667] mt7927 0000:06:00.0: === DMA Enable ===
-[ 1824.281669] mt7927 0000:06:00.0:   Resetting DMA pointers...
-[ 1824.281674] mt7927 0000:06:00.0:   GLO_CFG before enable: 0x4010a870
-[ 1824.281676] mt7927 0000:06:00.0:   Setting config flags: 0x50209070
-[ 1824.281682] mt7927 0000:06:00.0:   GLO_CFG after config: 0x5030b870
-[ 1824.281684] mt7927 0000:06:00.0:   Enabling TX/RX DMA...
-[ 1824.281690] mt7927 0000:06:00.0:   GLO_CFG final: 0x5030b875
-[ 1824.281692] mt7927 0000:06:00.0:
-[ 1824.281696] mt7927 0000:06:00.0:   WPDMA_GLO_CFG final: 0x5030b875
-[ 1824.281697] mt7927 0000:06:00.0:   GLO_CFG has value - registers may be writable
-[ 1824.281699] mt7927 0000:06:00.0: === Critical Register Dump ===
-[ 1824.281701] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
-[ 1824.281706] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
-[ 1824.281711] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
-[ 1824.281715] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
-[ 1824.281719] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
-[ 1824.281723] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
-[ 1824.281727] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
-[ 1824.281731] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
-[ 1824.281736] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
-[ 1824.281738] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
-[ 1824.281740] mt7927 0000:06:00.0:
-[ 1824.281741] mt7927 0000:06:00.0: === Firmware Loading ===
-[ 1824.285019] mt7927 0000:06:00.0:   Patch firmware loaded: 197792 bytes
-[ 1824.285048] mt7927 0000:06:00.0:   Firmware DMA buffer at 0x00000000fffc0000
-[ 1824.285056] mt7927 0000:06:00.0:   REMAP READ [0x7c0600f0] = 0x00000000 (window: base=0x7c060000, off=0xf0)
-[ 1824.285059] mt7927 0000:06:00.0:   MT_CONN_ON_MISC: 0x00000000
-[ 1824.285061] mt7927 0000:06:00.0:
-[ 1824.285062] mt7927 0000:06:00.0: # MT7927 Driver Initialization Complete
-[ 1824.285064] mt7927 0000:06:00.0: # Status: Device bound, debugging enabled
-[ 1824.285066] mt7927 0000:06:00.0: # Next: Check dmesg for register values
-[ 1824.285068] mt7927 0000:06:00.0: ############################################
-
+[  140.355860] mt7927: module verification failed: signature and/or required key missing - tainting kernel
+[  140.356328] mt7927 0000:06:00.0:
+[  140.356331] mt7927 0000:06:00.0: ############################################
+[  140.356333] mt7927 0000:06:00.0: # MT7927 WiFi 7 Driver v0.3.0
+[  140.356335] mt7927 0000:06:00.0: # Device: 14c3:7927 (AMD RZ738 compatible)
+[  140.356337] mt7927 0000:06:00.0: ############################################
+[  140.356340] mt7927 0000:06:00.0:
+[  140.356347] mt7927 0000:06:00.0: enabling device (0000 -> 0002)
+[  140.356457] mt7927 0000:06:00.0:   BAR0 mapped: [mem 0xfb200000-0xfb3fffff 64bit] (size: 0x200000)
+[  140.356461] mt7927 0000:06:00.0: === PCI State Dump ===
+[  140.356470] mt7927 0000:06:00.0:   PCI Command: 0x0006 (MEM=1, MASTER=1)
+[  140.356473] mt7927 0000:06:00.0:   PCI Status:  0x0010
+[  140.356475] mt7927 0000:06:00.0:   BAR0: 0xfb200004 (len=2048 KB), BAR2: 0xfb400004
+[  140.356477] mt7927 0000:06:00.0:   Subsystem: 105b:e104
+[  140.356479] mt7927 0000:06:00.0:   MMIO range: 0x00000000 - 0x001fffff
+[  140.356481] mt7927 0000:06:00.0:   WARNING: BAR0 too small for high registers!
+[  140.356483] mt7927 0000:06:00.0:   Registers like 0x7c060010 are OUT OF RANGE
+[  140.356485] mt7927 0000:06:00.0:
+[  140.356486] mt7927 0000:06:00.0: === Critical Register Dump ===
+[  140.356488] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
+[  140.356493] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
+[  140.356498] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
+[  140.356502] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
+[  140.356506] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
+[  140.356511] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
+[  140.356515] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
+[  140.356519] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
+[  140.356523] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
+[  140.356526] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
+[  140.356527] mt7927 0000:06:00.0:
+[  140.356529] mt7927 0000:06:00.0: === FW Power Control (give to firmware) ===
+[  140.356531] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
+[  140.356537] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.356540] mt7927 0000:06:00.0:   [1] Writing SET_OWN to 0x7c060010...
+[  140.356545] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  140.376475] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.376481] mt7927 0000:06:00.0:   [1] Timeout at addr 0x7c060010
+[  140.376488] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.376491] mt7927 0000:06:00.0:   [2] Writing SET_OWN to 0x7c060010...
+[  140.376496] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  140.396594] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.396597] mt7927 0000:06:00.0:   [2] Timeout at addr 0x7c060010
+[  140.396604] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.396607] mt7927 0000:06:00.0:   [3] Writing SET_OWN to 0x7c060010...
+[  140.396611] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  140.416194] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.416198] mt7927 0000:06:00.0:   [3] Timeout at addr 0x7c060010
+[  140.416201] mt7927 0000:06:00.0:   Trying alternative LPCTL address 0x18060010...
+[  140.416206] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
+[  140.435456] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.435462] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
+[  140.455563] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.455569] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
+[  140.475670] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.475673] mt7927 0000:06:00.0:   FW ownership handoff failed (non-fatal)
+[  140.475674] mt7927 0000:06:00.0: FW ownership handoff failed (continuing)
+[  140.475676] mt7927 0000:06:00.0: === Driver Power Control (take ownership) ===
+[  140.475678] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
+[  140.475685] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.475687] mt7927 0000:06:00.0:   [1] Writing CLR_OWN to 0x7c060010...
+[  140.475692] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000002 (window: base=0x7c060000, off=0x10)
+[  140.475699] mt7927 0000:06:00.0:   Driver ownership acquired (attempt 1)
+[  140.475706] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.475708] mt7927 0000:06:00.0:   LPCTL: 0x000001d2 -> 0x000001d2
+[  140.475710] mt7927 0000:06:00.0:
+[  140.475712] mt7927 0000:06:00.0:   Reading Chip ID via remap (0x70010200)...
+[  140.475719] mt7927 0000:06:00.0:   REMAP READ [0x70010200] = 0x7fff0000 (window: base=0x70010000, off=0x200)
+[  140.475726] mt7927 0000:06:00.0:   REMAP READ [0x70010204] = 0x00000000 (window: base=0x70010000, off=0x204)
+[  140.475729] mt7927 0000:06:00.0:   Chip ID: 0x7fff0000
+[  140.475731] mt7927 0000:06:00.0:   Chip Rev: 0x00000000
+[  140.475732] mt7927 0000:06:00.0:
+[  140.475734] mt7927 0000:06:00.0:   Setting EMI sleep protection via remap...
+[  140.475741] mt7927 0000:06:00.0:   REMAP READ [0x18011100] = 0x00000002 (window: base=0x18010000, off=0x1100)
+[  140.475746] mt7927 0000:06:00.0:   REMAP WRITE [0x18011100] = 0x00000002 (window: base=0x18010000, off=0x1100)
+[  140.475749] mt7927 0000:06:00.0:
+[  140.475750] mt7927 0000:06:00.0: === WFSYS Reset (addr=0x7c000140) ===
+[  140.475752] mt7927 0000:06:00.0:   Using remapped register access
+[  140.475759] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.475761] mt7927 0000:06:00.0:   Before reset: 0x00000011
+[  140.475763] mt7927 0000:06:00.0:   INIT_DONE already set, still resetting...
+[  140.475765] mt7927 0000:06:00.0:   Asserting reset (clearing bit 0)...
+[  140.475772] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.475777] mt7927 0000:06:00.0:   REMAP WRITE [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
+[  140.475784] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
+[  140.475786] mt7927 0000:06:00.0:   After clear: 0x00000010
+[  140.475788] mt7927 0000:06:00.0:   Waiting 50ms...
+[  140.526360] mt7927 0000:06:00.0:   Deasserting reset (setting bit 0)...
+[  140.526368] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
+[  140.526374] mt7927 0000:06:00.0:   REMAP WRITE [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.526381] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.526383] mt7927 0000:06:00.0:   After set: 0x00000011
+[  140.526385] mt7927 0000:06:00.0:   Polling for INIT_DONE (bit 4), timeout 100ms...
+[  140.526397] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.526399] mt7927 0000:06:00.0:   WFSYS reset COMPLETE: 0x00000011
+[  140.526401] mt7927 0000:06:00.0:
+[  140.526407] mt7927 0000:06:00.0:   WRITE [0x000d4204] HOST_INT_ENA: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  140.526417] mt7927 0000:06:00.0:   WRITE [0x00010188] PCIE_MAC_INT_EN: 0x000000ff -> write 0x000000ff -> read 0x000000ff OK
+[  140.526420] mt7927 0000:06:00.0:
+[  140.526422] mt7927 0000:06:00.0: === DMA Initialization ===
+[  140.526423] mt7927 0000:06:00.0: === DMA Disable (force=1) ===
+[  140.526427] mt7927 0000:06:00.0:   GLO_CFG before: 0x1010b870
+[  140.526434] mt7927 0000:06:00.0:   GLO_CFG after clear: 0x0010a870
+[  140.526436] mt7927 0000:06:00.0:   Waiting for DMA busy to clear...
+[  140.526439] mt7927 0000:06:00.0:   Disabling DMASHDL...
+[  140.526447] mt7927 0000:06:00.0:   WRITE [0x000d42b0] GLO_CFG_EXT0: 0x28c004df -> write 0x28c004df -> read 0x28c004df OK
+[  140.526450] mt7927 0000:06:00.0:   Setting DMASHDL bypass via remap...
+[  140.526457] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
+[  140.526462] mt7927 0000:06:00.0:   REMAP WRITE [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
+[  140.526469] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
+[  140.526472] mt7927 0000:06:00.0:   DMASHDL_SW_CONTROL: 0x00000001 -> 0x00000001
+[  140.526474] mt7927 0000:06:00.0:   Force reset sequence...
+[  140.526485] mt7927 0000:06:00.0:   WFDMA0_RST: 0x00000000
+[  140.526487] mt7927 0000:06:00.0: === DMA Prefetch Configuration ===
+[  140.526488] mt7927 0000:06:00.0:   TX Ring 0 (Data)...
+[  140.526494] mt7927 0000:06:00.0:   WRITE [0x000d4600] TX_RING0_EXT_CTRL: 0x00000000 -> write 0x00000004 -> read 0x00000000 MISMATCH!
+[  140.526497] mt7927 0000:06:00.0:   TX Ring 1 (Data)...
+[  140.526503] mt7927 0000:06:00.0:   WRITE [0x000d4604] TX_RING1_EXT_CTRL: 0x00000000 -> write 0x00400004 -> read 0x00000000 MISMATCH!
+[  140.526506] mt7927 0000:06:00.0:   TX Ring 2 (Data)...
+[  140.526512] mt7927 0000:06:00.0:   WRITE [0x000d4608] TX_RING2_EXT_CTRL: 0x00000000 -> write 0x00800004 -> read 0x00000000 MISMATCH!
+[  140.526515] mt7927 0000:06:00.0:   TX Ring 15 (MCU WM)...
+[  140.526521] mt7927 0000:06:00.0:   WRITE [0x000d463c] TX_RING15_EXT_CTRL: 0x00000000 -> write 0x05000004 -> read 0x00000000 MISMATCH!
+[  140.526523] mt7927 0000:06:00.0:   TX Ring 16 (FWDL)...
+[  140.526529] mt7927 0000:06:00.0:   WRITE [0x000d4640] TX_RING16_EXT_CTRL: 0x00000000 -> write 0x05400004 -> read 0x00000000 MISMATCH!
+[  140.526532] mt7927 0000:06:00.0:   RX Ring 0 (MCU Events)...
+[  140.526538] mt7927 0000:06:00.0:   WRITE [0x000d4680] RX_RING0_EXT_CTRL: 0x00000000 -> write 0x01000004 -> read 0x00000000 MISMATCH!
+[  140.526541] mt7927 0000:06:00.0:   RX Ring 1 (WM Events)...
+[  140.526547] mt7927 0000:06:00.0:   WRITE [0x000d4684] RX_RING1_EXT_CTRL: 0x00000000 -> write 0x01400004 -> read 0x00000000 MISMATCH!
+[  140.526549] mt7927 0000:06:00.0:   RX Ring 2 (Data)...
+[  140.526555] mt7927 0000:06:00.0:   WRITE [0x000d4688] RX_RING2_EXT_CTRL: 0x00000000 -> write 0x01800004 -> read 0x00000000 MISMATCH!
+[  140.526558] mt7927 0000:06:00.0:   RX Ring 3 (Data)...
+[  140.526564] mt7927 0000:06:00.0:   WRITE [0x000d468c] RX_RING3_EXT_CTRL: 0x00000000 -> write 0x01c00004 -> read 0x00000000 MISMATCH!
+[  140.526566] mt7927 0000:06:00.0:   DMA prefetch configuration complete
+[  140.526568] mt7927 0000:06:00.0:   Disabling clock gating before ring config...
+[  140.526572] mt7927 0000:06:00.0:   GLO_CFG before CLK_GAT_DIS: 0x0010a870
+[  140.526578] mt7927 0000:06:00.0:   GLO_CFG after CLK_GAT_DIS:  0x4010a870
+[  140.526588] mt7927 0000:06:00.0:   TX ring allocated: 128 descriptors at 0x00000000fffff000
+[  140.526591] mt7927 0000:06:00.0:   Configuring FWDL ring (ring 16)...
+[  140.526597] mt7927 0000:06:00.0:   WRITE [0x000d4400] RING16_BASE: 0x00000000 -> write 0xfffff000 -> read 0x00000000 MISMATCH!
+[  140.526605] mt7927 0000:06:00.0:   WRITE [0x000d4404] RING16_CNT: 0x00000200 -> write 0x00000080 -> read 0x00000200 MISMATCH!
+[  140.526612] mt7927 0000:06:00.0:   WRITE [0x000d4408] RING16_CIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  140.526619] mt7927 0000:06:00.0:   WRITE [0x000d440c] RING16_DIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  140.526621] mt7927 0000:06:00.0: === DMA Enable ===
+[  140.526623] mt7927 0000:06:00.0:   Resetting DMA pointers...
+[  140.526628] mt7927 0000:06:00.0:   GLO_CFG before enable: 0x4010a870
+[  140.526630] mt7927 0000:06:00.0:   Setting config flags: 0x50209070
+[  140.526636] mt7927 0000:06:00.0:   GLO_CFG after config: 0x5030b870
+[  140.526638] mt7927 0000:06:00.0:   Enabling TX/RX DMA...
+[  140.526644] mt7927 0000:06:00.0:   GLO_CFG final: 0x5030b875
+[  140.526646] mt7927 0000:06:00.0:
+[  140.526650] mt7927 0000:06:00.0:   WPDMA_GLO_CFG final: 0x5030b875
+[  140.526652] mt7927 0000:06:00.0:   GLO_CFG has value - registers may be writable
+[  140.526654] mt7927 0000:06:00.0: === Critical Register Dump ===
+[  140.526655] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
+[  140.526660] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
+[  140.526665] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
+[  140.526669] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
+[  140.526673] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
+[  140.526678] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
+[  140.526682] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
+[  140.526686] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
+[  140.526690] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
+[  140.526692] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
+[  140.526694] mt7927 0000:06:00.0:
+[  140.526696] mt7927 0000:06:00.0: === Firmware Loading ===
+[  140.530060] mt7927 0000:06:00.0:   Patch firmware loaded: 197792 bytes
+[  140.530093] mt7927 0000:06:00.0:   Firmware DMA buffer at 0x00000000fffc0000
+[  140.530101] mt7927 0000:06:00.0:   REMAP READ [0x7c0600f0] = 0x00000000 (window: base=0x7c060000, off=0xf0)
+[  140.530104] mt7927 0000:06:00.0:   MT_CONN_ON_MISC: 0x00000000
+[  140.530106] mt7927 0000:06:00.0:
+[  140.530108] mt7927 0000:06:00.0: # MT7927 Driver Initialization Complete
+[  140.530110] mt7927 0000:06:00.0: # Status: Device bound, debugging enabled
+[  140.530111] mt7927 0000:06:00.0: # Next: Check dmesg for register values
+[  140.530113] mt7927 0000:06:00.0: ############################################
 
 xan517@bazzite:~/driver/mt7927-bazzite/packaging$ sudo dmesg | grep -E 'mt7927.*0x'
-[ 1824.112295] mt7927 0000:06:00.0:   BAR0 mapped: [mem 0xfb200000-0xfb3fffff 64bit] (size: 0x200000)
-[ 1824.112308] mt7927 0000:06:00.0:   PCI Command: 0x0006 (MEM=1, MASTER=1)
-[ 1824.112311] mt7927 0000:06:00.0:   PCI Status:  0x0010
-[ 1824.112313] mt7927 0000:06:00.0:   BAR0: 0xfb200004 (len=2048 KB), BAR2: 0xfb400004
-[ 1824.112318] mt7927 0000:06:00.0:   MMIO range: 0x00000000 - 0x001fffff
-[ 1824.112322] mt7927 0000:06:00.0:   Registers like 0x7c060010 are OUT OF RANGE
-[ 1824.112327] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
-[ 1824.112332] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
-[ 1824.112337] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
-[ 1824.112341] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x4010a870
-[ 1824.112345] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
-[ 1824.112349] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
-[ 1824.112353] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
-[ 1824.112358] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
-[ 1824.112362] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
-[ 1824.112364] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
-[ 1824.112369] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
-[ 1824.112376] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.112379] mt7927 0000:06:00.0:   [1] Writing SET_OWN to 0x7c060010...
-[ 1824.112384] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
-[ 1824.131403] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.131408] mt7927 0000:06:00.0:   [1] Timeout at addr 0x7c060010
-[ 1824.131416] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.131419] mt7927 0000:06:00.0:   [2] Writing SET_OWN to 0x7c060010...
-[ 1824.131424] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
-[ 1824.151484] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.151489] mt7927 0000:06:00.0:   [2] Timeout at addr 0x7c060010
-[ 1824.151497] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.151500] mt7927 0000:06:00.0:   [3] Writing SET_OWN to 0x7c060010...
-[ 1824.151505] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
-[ 1824.170469] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.170474] mt7927 0000:06:00.0:   [3] Timeout at addr 0x7c060010
-[ 1824.170477] mt7927 0000:06:00.0:   Trying alternative LPCTL address 0x18060010...
-[ 1824.170482] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
-[ 1824.190513] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.190520] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
-[ 1824.210621] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.210627] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
-[ 1824.230478] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
-[ 1824.230488] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
-[ 1824.230495] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.230497] mt7927 0000:06:00.0:   [1] Writing CLR_OWN to 0x7c060010...
-[ 1824.230502] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000002 (window: base=0x7c060000, off=0x10)
-[ 1824.230516] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
-[ 1824.230519] mt7927 0000:06:00.0:   LPCTL: 0x000001d2 -> 0x000001d2
-[ 1824.230523] mt7927 0000:06:00.0:   Reading Chip ID via remap (0x70010200)...
-[ 1824.230529] mt7927 0000:06:00.0:   REMAP READ [0x70010200] = 0x7fff0000 (window: base=0x70010000, off=0x200)
-[ 1824.230536] mt7927 0000:06:00.0:   REMAP READ [0x70010204] = 0x00000000 (window: base=0x70010000, off=0x204)
-[ 1824.230539] mt7927 0000:06:00.0:   Chip ID: 0x7fff0000
-[ 1824.230541] mt7927 0000:06:00.0:   Chip Rev: 0x00000000
-[ 1824.230551] mt7927 0000:06:00.0:   REMAP READ [0x18011100] = 0x00000002 (window: base=0x18010000, off=0x1100)
-[ 1824.230556] mt7927 0000:06:00.0:   REMAP WRITE [0x18011100] = 0x00000002 (window: base=0x18010000, off=0x1100)
-[ 1824.230560] mt7927 0000:06:00.0: === WFSYS Reset (addr=0x7c000140) ===
-[ 1824.230569] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.230571] mt7927 0000:06:00.0:   Before reset: 0x00000011
-[ 1824.230581] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.230587] mt7927 0000:06:00.0:   REMAP WRITE [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
-[ 1824.230594] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
-[ 1824.230596] mt7927 0000:06:00.0:   After clear: 0x00000010
-[ 1824.281413] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
-[ 1824.281418] mt7927 0000:06:00.0:   REMAP WRITE [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.281426] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.281428] mt7927 0000:06:00.0:   After set: 0x00000011
-[ 1824.281441] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
-[ 1824.281444] mt7927 0000:06:00.0:   WFSYS reset COMPLETE: 0x00000011
-[ 1824.281452] mt7927 0000:06:00.0:   WRITE [0x000d4204] HOST_INT_ENA: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
-[ 1824.281461] mt7927 0000:06:00.0:   WRITE [0x00010188] PCIE_MAC_INT_EN: 0x000000ff -> write 0x000000ff -> read 0x000000ff OK
-[ 1824.281472] mt7927 0000:06:00.0:   GLO_CFG before: 0x1010b870
-[ 1824.281478] mt7927 0000:06:00.0:   GLO_CFG after clear: 0x0010a870
-[ 1824.281492] mt7927 0000:06:00.0:   WRITE [0x000d42b0] GLO_CFG_EXT0: 0x28c004df -> write 0x28c004df -> read 0x28c004df OK
-[ 1824.281501] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
-[ 1824.281506] mt7927 0000:06:00.0:   REMAP WRITE [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
-[ 1824.281514] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
-[ 1824.281516] mt7927 0000:06:00.0:   DMASHDL_SW_CONTROL: 0x00000001 -> 0x00000001
-[ 1824.281529] mt7927 0000:06:00.0:   WFDMA0_RST: 0x00000000
-[ 1824.281538] mt7927 0000:06:00.0:   WRITE [0x000d4600] TX_RING0_EXT_CTRL: 0x00000000 -> write 0x00000004 -> read 0x00000000 MISMATCH!
-[ 1824.281547] mt7927 0000:06:00.0:   WRITE [0x000d4604] TX_RING1_EXT_CTRL: 0x00000000 -> write 0x00400004 -> read 0x00000000 MISMATCH!
-[ 1824.281556] mt7927 0000:06:00.0:   WRITE [0x000d4608] TX_RING2_EXT_CTRL: 0x00000000 -> write 0x00800004 -> read 0x00000000 MISMATCH!
-[ 1824.281567] mt7927 0000:06:00.0:   WRITE [0x000d463c] TX_RING15_EXT_CTRL: 0x00000000 -> write 0x05000004 -> read 0x00000000 MISMATCH!
-[ 1824.281576] mt7927 0000:06:00.0:   WRITE [0x000d4640] TX_RING16_EXT_CTRL: 0x00000000 -> write 0x05400004 -> read 0x00000000 MISMATCH!
-[ 1824.281585] mt7927 0000:06:00.0:   WRITE [0x000d4680] RX_RING0_EXT_CTRL: 0x00000000 -> write 0x01000004 -> read 0x00000000 MISMATCH!
-[ 1824.281593] mt7927 0000:06:00.0:   WRITE [0x000d4684] RX_RING1_EXT_CTRL: 0x00000000 -> write 0x01400004 -> read 0x00000000 MISMATCH!
-[ 1824.281602] mt7927 0000:06:00.0:   WRITE [0x000d4688] RX_RING2_EXT_CTRL: 0x00000000 -> write 0x01800004 -> read 0x00000000 MISMATCH!
-[ 1824.281610] mt7927 0000:06:00.0:   WRITE [0x000d468c] RX_RING3_EXT_CTRL: 0x00000000 -> write 0x01c00004 -> read 0x00000000 MISMATCH!
-[ 1824.281618] mt7927 0000:06:00.0:   GLO_CFG before CLK_GAT_DIS: 0x0010a870
-[ 1824.281625] mt7927 0000:06:00.0:   GLO_CFG after CLK_GAT_DIS:  0x4010a870
-[ 1824.281634] mt7927 0000:06:00.0:   TX ring allocated: 128 descriptors at 0x00000000fffff000
-[ 1824.281643] mt7927 0000:06:00.0:   WRITE [0x000d4400] RING16_BASE: 0x00000000 -> write 0xfffff000 -> read 0x00000000 MISMATCH!
-[ 1824.281651] mt7927 0000:06:00.0:   WRITE [0x000d4404] RING16_CNT: 0x00000200 -> write 0x00000080 -> read 0x00000200 MISMATCH!
-[ 1824.281658] mt7927 0000:06:00.0:   WRITE [0x000d4408] RING16_CIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
-[ 1824.281665] mt7927 0000:06:00.0:   WRITE [0x000d440c] RING16_DIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
-[ 1824.281674] mt7927 0000:06:00.0:   GLO_CFG before enable: 0x4010a870
-[ 1824.281676] mt7927 0000:06:00.0:   Setting config flags: 0x50209070
-[ 1824.281682] mt7927 0000:06:00.0:   GLO_CFG after config: 0x5030b870
-[ 1824.281690] mt7927 0000:06:00.0:   GLO_CFG final: 0x5030b875
-[ 1824.281696] mt7927 0000:06:00.0:   WPDMA_GLO_CFG final: 0x5030b875
-[ 1824.281701] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
-[ 1824.281706] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
-[ 1824.281711] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
-[ 1824.281715] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
-[ 1824.281719] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
-[ 1824.281723] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
-[ 1824.281727] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
-[ 1824.281731] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
-[ 1824.281736] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
-[ 1824.281738] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
-[ 1824.285048] mt7927 0000:06:00.0:   Firmware DMA buffer at 0x00000000fffc0000
-[ 1824.285056] mt7927 0000:06:00.0:   REMAP READ [0x7c0600f0] = 0x00000000 (window: base=0x7c060000, off=0xf0)
-[ 1824.285059] mt7927 0000:06:00.0:   MT_CONN_ON_MISC: 0x00000000
+[  140.356457] mt7927 0000:06:00.0:   BAR0 mapped: [mem 0xfb200000-0xfb3fffff 64bit] (size: 0x200000)
+[  140.356470] mt7927 0000:06:00.0:   PCI Command: 0x0006 (MEM=1, MASTER=1)
+[  140.356473] mt7927 0000:06:00.0:   PCI Status:  0x0010
+[  140.356475] mt7927 0000:06:00.0:   BAR0: 0xfb200004 (len=2048 KB), BAR2: 0xfb400004
+[  140.356479] mt7927 0000:06:00.0:   MMIO range: 0x00000000 - 0x001fffff
+[  140.356483] mt7927 0000:06:00.0:   Registers like 0x7c060010 are OUT OF RANGE
+[  140.356488] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
+[  140.356493] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
+[  140.356498] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
+[  140.356502] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
+[  140.356506] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
+[  140.356511] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
+[  140.356515] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
+[  140.356519] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
+[  140.356523] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
+[  140.356526] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
+[  140.356531] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
+[  140.356537] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.356540] mt7927 0000:06:00.0:   [1] Writing SET_OWN to 0x7c060010...
+[  140.356545] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  140.376475] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.376481] mt7927 0000:06:00.0:   [1] Timeout at addr 0x7c060010
+[  140.376488] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.376491] mt7927 0000:06:00.0:   [2] Writing SET_OWN to 0x7c060010...
+[  140.376496] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  140.396594] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.396597] mt7927 0000:06:00.0:   [2] Timeout at addr 0x7c060010
+[  140.396604] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.396607] mt7927 0000:06:00.0:   [3] Writing SET_OWN to 0x7c060010...
+[  140.396611] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  140.416194] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.416198] mt7927 0000:06:00.0:   [3] Timeout at addr 0x7c060010
+[  140.416201] mt7927 0000:06:00.0:   Trying alternative LPCTL address 0x18060010...
+[  140.416206] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
+[  140.435456] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.435462] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
+[  140.455563] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.455569] mt7927 0000:06:00.0:   REMAP WRITE [0x18060010] = 0x00000001 (window: base=0x18060000, off=0x10)
+[  140.475670] mt7927 0000:06:00.0:   POLL TIMEOUT [0x18060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  140.475678] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
+[  140.475685] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.475687] mt7927 0000:06:00.0:   [1] Writing CLR_OWN to 0x7c060010...
+[  140.475692] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000002 (window: base=0x7c060000, off=0x10)
+[  140.475706] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  140.475708] mt7927 0000:06:00.0:   LPCTL: 0x000001d2 -> 0x000001d2
+[  140.475712] mt7927 0000:06:00.0:   Reading Chip ID via remap (0x70010200)...
+[  140.475719] mt7927 0000:06:00.0:   REMAP READ [0x70010200] = 0x7fff0000 (window: base=0x70010000, off=0x200)
+[  140.475726] mt7927 0000:06:00.0:   REMAP READ [0x70010204] = 0x00000000 (window: base=0x70010000, off=0x204)
+[  140.475729] mt7927 0000:06:00.0:   Chip ID: 0x7fff0000
+[  140.475731] mt7927 0000:06:00.0:   Chip Rev: 0x00000000
+[  140.475741] mt7927 0000:06:00.0:   REMAP READ [0x18011100] = 0x00000002 (window: base=0x18010000, off=0x1100)
+[  140.475746] mt7927 0000:06:00.0:   REMAP WRITE [0x18011100] = 0x00000002 (window: base=0x18010000, off=0x1100)
+[  140.475750] mt7927 0000:06:00.0: === WFSYS Reset (addr=0x7c000140) ===
+[  140.475759] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.475761] mt7927 0000:06:00.0:   Before reset: 0x00000011
+[  140.475772] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.475777] mt7927 0000:06:00.0:   REMAP WRITE [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
+[  140.475784] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
+[  140.475786] mt7927 0000:06:00.0:   After clear: 0x00000010
+[  140.526368] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000010 (window: base=0x7c000000, off=0x140)
+[  140.526374] mt7927 0000:06:00.0:   REMAP WRITE [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.526381] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.526383] mt7927 0000:06:00.0:   After set: 0x00000011
+[  140.526397] mt7927 0000:06:00.0:   REMAP READ [0x7c000140] = 0x00000011 (window: base=0x7c000000, off=0x140)
+[  140.526399] mt7927 0000:06:00.0:   WFSYS reset COMPLETE: 0x00000011
+[  140.526407] mt7927 0000:06:00.0:   WRITE [0x000d4204] HOST_INT_ENA: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  140.526417] mt7927 0000:06:00.0:   WRITE [0x00010188] PCIE_MAC_INT_EN: 0x000000ff -> write 0x000000ff -> read 0x000000ff OK
+[  140.526427] mt7927 0000:06:00.0:   GLO_CFG before: 0x1010b870
+[  140.526434] mt7927 0000:06:00.0:   GLO_CFG after clear: 0x0010a870
+[  140.526447] mt7927 0000:06:00.0:   WRITE [0x000d42b0] GLO_CFG_EXT0: 0x28c004df -> write 0x28c004df -> read 0x28c004df OK
+[  140.526457] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
+[  140.526462] mt7927 0000:06:00.0:   REMAP WRITE [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
+[  140.526469] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
+[  140.526472] mt7927 0000:06:00.0:   DMASHDL_SW_CONTROL: 0x00000001 -> 0x00000001
+[  140.526485] mt7927 0000:06:00.0:   WFDMA0_RST: 0x00000000
+[  140.526494] mt7927 0000:06:00.0:   WRITE [0x000d4600] TX_RING0_EXT_CTRL: 0x00000000 -> write 0x00000004 -> read 0x00000000 MISMATCH!
+[  140.526503] mt7927 0000:06:00.0:   WRITE [0x000d4604] TX_RING1_EXT_CTRL: 0x00000000 -> write 0x00400004 -> read 0x00000000 MISMATCH!
+[  140.526512] mt7927 0000:06:00.0:   WRITE [0x000d4608] TX_RING2_EXT_CTRL: 0x00000000 -> write 0x00800004 -> read 0x00000000 MISMATCH!
+[  140.526521] mt7927 0000:06:00.0:   WRITE [0x000d463c] TX_RING15_EXT_CTRL: 0x00000000 -> write 0x05000004 -> read 0x00000000 MISMATCH!
+[  140.526529] mt7927 0000:06:00.0:   WRITE [0x000d4640] TX_RING16_EXT_CTRL: 0x00000000 -> write 0x05400004 -> read 0x00000000 MISMATCH!
+[  140.526538] mt7927 0000:06:00.0:   WRITE [0x000d4680] RX_RING0_EXT_CTRL: 0x00000000 -> write 0x01000004 -> read 0x00000000 MISMATCH!
+[  140.526547] mt7927 0000:06:00.0:   WRITE [0x000d4684] RX_RING1_EXT_CTRL: 0x00000000 -> write 0x01400004 -> read 0x00000000 MISMATCH!
+[  140.526555] mt7927 0000:06:00.0:   WRITE [0x000d4688] RX_RING2_EXT_CTRL: 0x00000000 -> write 0x01800004 -> read 0x00000000 MISMATCH!
+[  140.526564] mt7927 0000:06:00.0:   WRITE [0x000d468c] RX_RING3_EXT_CTRL: 0x00000000 -> write 0x01c00004 -> read 0x00000000 MISMATCH!
+[  140.526572] mt7927 0000:06:00.0:   GLO_CFG before CLK_GAT_DIS: 0x0010a870
+[  140.526578] mt7927 0000:06:00.0:   GLO_CFG after CLK_GAT_DIS:  0x4010a870
+[  140.526588] mt7927 0000:06:00.0:   TX ring allocated: 128 descriptors at 0x00000000fffff000
+[  140.526597] mt7927 0000:06:00.0:   WRITE [0x000d4400] RING16_BASE: 0x00000000 -> write 0xfffff000 -> read 0x00000000 MISMATCH!
+[  140.526605] mt7927 0000:06:00.0:   WRITE [0x000d4404] RING16_CNT: 0x00000200 -> write 0x00000080 -> read 0x00000200 MISMATCH!
+[  140.526612] mt7927 0000:06:00.0:   WRITE [0x000d4408] RING16_CIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  140.526619] mt7927 0000:06:00.0:   WRITE [0x000d440c] RING16_DIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  140.526628] mt7927 0000:06:00.0:   GLO_CFG before enable: 0x4010a870
+[  140.526630] mt7927 0000:06:00.0:   Setting config flags: 0x50209070
+[  140.526636] mt7927 0000:06:00.0:   GLO_CFG after config: 0x5030b870
+[  140.526644] mt7927 0000:06:00.0:   GLO_CFG final: 0x5030b875
+[  140.526650] mt7927 0000:06:00.0:   WPDMA_GLO_CFG final: 0x5030b875
+[  140.526655] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
+[  140.526660] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
+[  140.526665] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
+[  140.526669] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
+[  140.526673] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
+[  140.526678] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
+[  140.526682] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
+[  140.526686] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
+[  140.526690] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
+[  140.526692] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
+[  140.530093] mt7927 0000:06:00.0:   Firmware DMA buffer at 0x00000000fffc0000
+[  140.530101] mt7927 0000:06:00.0:   REMAP READ [0x7c0600f0] = 0x00000000 (window: base=0x7c060000, off=0xf0)
+[  140.530104] mt7927 0000:06:00.0:   MT_CONN_ON_MISC: 0x00000000
