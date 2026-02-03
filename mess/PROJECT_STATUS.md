@@ -82,14 +82,16 @@ Phase 5: Polish                [----------] 0%
 
 ---
 
-## Immediate Next Steps (v0.6.0+)
+## Immediate Next Steps (v0.9.0+)
 
-1. **Test v0.6.0** - Verify DMA interrupt enable fixes dma_idx stuck at 0
-2. **Check DMA completion** - cpu_idx should now equal dma_idx after transfer
-3. **Verify MCU response** - Check RX Ring 0 for PATCH_SEM_CONTROL response
-4. **Add FW_START command** - Send FW_START_REQ after patch transfer
-5. **Poll MT_CONN_ON_MISC** - Check bits 0-1 for FW_N9_RDY (0x3)
-5. **Check MT_CONN_ON_MISC for FW ready** - Currently shows 0x00000000
+1. **Test v0.9.0** - Check if ROM wake sequence helps dma_idx advance
+2. **Analyze diagnostic output** - ROM state, MCU_CMD values, INT_STA
+3. **If ROM still not responding**:
+   - Try alternative wake methods (different MCU_CMD bits)
+   - Check if ROM needs WFSYS reset to be done differently
+   - Investigate MT7921 vs MT7925 ROM differences
+4. **If dma_idx advances** - Continue with FW_START command
+5. **Poll MT_CONN_ON_MISC** - Look for any state change from 0x00000000
 
 ### Key Discovery (v0.3.0)
 
@@ -131,6 +133,7 @@ The hardest part ahead is the MCU command protocol - it's complex and needs to m
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v0.9.0 | 2026-02-03 | **Add ROM bootloader wake sequence and diagnostics.** v0.8.0 fixed descriptors (no IOMMU faults) but dma_idx still stuck at 0 - ROM not processing rings. Added: MT_MCU_CMD register wake signals, ROM state polling via MT_CONN_ON_MISC, expanded diagnostic dump on timeout showing ROM state, ring BASE, INT_ENA values. Hypothesis: ROM needs explicit wake or different handshake. |
 | v0.8.0 | 2026-02-03 | **CRITICAL: Fix DMA descriptor control field bits!** Our MT_DMA_CTL_SD_LEN0 was GENMASK(15,0) but kernel uses GENMASK(29,16). LAST_SEC0 was BIT(16) but kernel uses BIT(30). BURST was BIT(17) but kernel uses BIT(15). This caused completely malformed descriptors - device saw garbage lengths! Also fixed: upper DMA address bits go in info field (bits [3:0]) not buf1. |
 | v0.7.0 | 2026-02-03 | **CRITICAL: Fix prefetch buffer values** - v0.6.0 still had IOMMU faults at 0x0, 0x300, 0x500. These addresses ARE the prefetch buffer bases! Our RX ring prefetch values were WRONG (0x0100 instead of 0x0000, etc). TX ring depths were also wrong (0x4 instead of 0x10). Fixed all prefetch values to match kernel mt792x_dma.c for is_mt7925(). |
 | v0.6.0 | 2026-02-03 | **Enable DMA interrupts** - v0.5.0 showed dma_idx stuck at 0 for ALL rings. Added MT_INT_TX_DONE_15/16, MT_INT_RX_DONE_0, MT_INT_MCU_CMD bits to HOST_INT_ENA. Also added MT7925-specific INT_TX_PRI/INT_RX_PRI and UWFDMA0_GLO_CFG_EXT1 config. |

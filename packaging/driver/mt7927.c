@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.8.0"
+#define DRV_VERSION "0.9.0"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -143,6 +143,33 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 /* MCU to Host Software Interrupt Enable */
 #define MT_MCU2HOST_SW_INT_ENA		(MT_WFDMA0_BASE + 0x1f4)
 #define MT_MCU_CMD_WAKE_RX_PCIE		BIT(0)
+
+/*
+ * v0.9.0: MCU Command Register - used to communicate with ROM bootloader
+ * This register is used by the driver to send commands/wake signals to the MCU.
+ */
+#define MT_MCU_CMD			(MT_WFDMA0_BASE + 0x1f0)
+#define MT_MCU_CMD_STOP_DMA_FW_RELOAD	BIT(1)
+#define MT_MCU_CMD_STOP_DMA		BIT(2)
+#define MT_MCU_CMD_RESET_DONE		BIT(3)
+#define MT_MCU_CMD_RECOVERY_DONE	BIT(4)
+#define MT_MCU_CMD_INIT_DONE		BIT(5)
+#define MT_MCU_CMD_NORMAL_STATE		BIT(6)
+#define MT_MCU_CMD_ERROR_MASK		GENMASK(5, 1)
+
+/*
+ * ROM Bootloader status bits in MT_CONN_ON_MISC (0x7c0600f0)
+ * These indicate the state of the N9 processor running the ROM
+ */
+#define MT_TOP_MISC2_FW_STATE		GENMASK(3, 0)
+#define MT_TOP_MISC2_FW_PWR_ON		BIT(1)
+
+/* FW state values */
+#define FW_STATE_INITIAL		0
+#define FW_STATE_FW_DOWNLOAD		1
+#define FW_STATE_NORMAL_OPERATION	2
+#define FW_STATE_NORMAL_TRX		3
+#define FW_STATE_RDY			7
 
 /* DMA Ring Pointers */
 #define MT_WFDMA0_RST_DTX_PTR		(MT_WFDMA0_BASE + 0x228)
@@ -1916,13 +1943,32 @@ static int mt7927_dma_tx_wait(struct mt7927_dev *dev, int timeout_ms)
 	{
 		u32 glo_cfg = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
 		u32 int_sta = mt7927_rr(dev, MT_WFDMA0_HOST_INT_STA);
+		u32 int_ena = mt7927_rr(dev, MT_WFDMA0_HOST_INT_ENA);
 		u32 pcie_int = mt7927_rr(dev, MT_PCIE_MAC_INT_STATUS);
+		u32 misc = mt7927_rr_remap(dev, MT_CONN_ON_MISC);
+		u32 mcu_cmd = mt7927_rr(dev, MT_MCU_CMD);
+		u32 ring_base = mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE);
+		u32 ring_cnt = mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE + 0x04);
 
 		dev_warn(&dev->pdev->dev,
 			 "  DMA wait timeout: cpu_idx=%d dma_idx=%d\n", cpu_idx, dma_idx);
 		dev_warn(&dev->pdev->dev,
-			 "  GLO_CFG=0x%08x INT_STA=0x%08x PCIE_INT=0x%08x\n",
-			 glo_cfg, int_sta, pcie_int);
+			 "  === v0.9.0 Diagnostic Dump ===\n");
+		dev_warn(&dev->pdev->dev,
+			 "  GLO_CFG=0x%08x (TX_EN=%d, RX_EN=%d, BUSY=%d)\n",
+			 glo_cfg,
+			 !!(glo_cfg & MT_WFDMA0_GLO_CFG_TX_DMA_EN),
+			 !!(glo_cfg & MT_WFDMA0_GLO_CFG_RX_DMA_EN),
+			 !!(glo_cfg & (MT_WFDMA0_GLO_CFG_TX_DMA_BUSY | MT_WFDMA0_GLO_CFG_RX_DMA_BUSY)));
+		dev_warn(&dev->pdev->dev,
+			 "  INT_ENA=0x%08x INT_STA=0x%08x PCIE_INT=0x%08x\n",
+			 int_ena, int_sta, pcie_int);
+		dev_warn(&dev->pdev->dev,
+			 "  MT_CONN_ON_MISC=0x%08x (ROM state) MT_MCU_CMD=0x%08x\n",
+			 misc, mcu_cmd);
+		dev_warn(&dev->pdev->dev,
+			 "  Ring16: BASE=0x%08x CNT=%d cpu_idx=%d dma_idx=%d\n",
+			 ring_base, ring_cnt, cpu_idx, dma_idx);
 
 		/* Check descriptor state - use dma_idx to find last attempted desc */
 		if (dev->tx_ring && dma_idx < dev->tx_ring_size) {
@@ -1931,6 +1977,20 @@ static int mt7927_dma_tx_wait(struct mt7927_dev *dev, int timeout_ms)
 				 "  Desc[%d]: buf0=0x%08x ctrl=0x%08x (DMA_DONE=%d)\n",
 				 dma_idx, le32_to_cpu(desc->buf0), le32_to_cpu(desc->ctrl),
 				 !!(le32_to_cpu(desc->ctrl) & MT_DMA_CTL_DMA_DONE));
+		}
+
+		/*
+		 * v0.9.0: If dma_idx is still 0 and we have a valid ring BASE,
+		 * the ROM bootloader is NOT processing our rings. Possible causes:
+		 * 1. ROM not awake/in wrong state
+		 * 2. Missing interrupt/wake signal
+		 * 3. ROM waiting for specific handshake
+		 */
+		if (dma_idx == 0 && ring_base != 0) {
+			dev_warn(&dev->pdev->dev,
+				 "  >>> DMA_IDX stuck at 0 - ROM not processing rings!\n");
+			dev_warn(&dev->pdev->dev,
+				 "  >>> ROM may be waiting for handshake or wake signal.\n");
 		}
 	}
 	return -ETIMEDOUT;
@@ -2178,6 +2238,115 @@ out:
 	return ret;
 }
 
+/*
+ * v0.9.0: Wake ROM bootloader and wait for it to be ready for firmware download
+ *
+ * The ROM bootloader after WFSYS reset may be in a sleep/idle state.
+ * We need to wake it up and wait for it to start polling the DMA rings.
+ *
+ * Key registers:
+ *   MT_MCU_CMD (0xd41f0): Send commands/wake signals to MCU
+ *   MT_CONN_ON_MISC (0x7c0600f0): Read ROM state
+ *
+ * The ROM transitions through states:
+ *   0 -> INITIAL (just after reset)
+ *   1 -> FW_DOWNLOAD (ready to receive firmware)
+ *   2-7 -> Various operational states
+ */
+static int mt7927_wait_for_rom_ready(struct mt7927_dev *dev)
+{
+	u32 status, mcu_cmd, state;
+	int i;
+
+	dev_info(&dev->pdev->dev, "=== v0.9.0: Wait for ROM Bootloader Ready ===\n");
+
+	/* Read initial state */
+	status = mt7927_rr_remap(dev, MT_CONN_ON_MISC);
+	mcu_cmd = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "  Initial: MT_CONN_ON_MISC=0x%08x MT_MCU_CMD=0x%08x\n",
+		 status, mcu_cmd);
+
+	state = status & MT_TOP_MISC2_FW_STATE;
+	dev_info(&dev->pdev->dev, "  FW state=%d (0=INITIAL, 1=FW_DOWNLOAD, 7=RDY)\n", state);
+
+	/*
+	 * Try to wake the ROM bootloader by signaling INIT_DONE.
+	 * This tells the ROM that the driver has completed initialization
+	 * and is ready for firmware download.
+	 */
+	dev_info(&dev->pdev->dev, "  Setting MCU_CMD_INIT_DONE to wake ROM...\n");
+	mt7927_wr(dev, MT_MCU_CMD, MT_MCU_CMD_INIT_DONE);
+	udelay(100);
+
+	/* Read back */
+	mcu_cmd = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "  After INIT_DONE: MT_MCU_CMD=0x%08x\n", mcu_cmd);
+
+	/*
+	 * Poll for ROM to enter a ready state.
+	 * In v0.8.0 we saw MT_CONN_ON_MISC=0x00000000 which means ROM isn't responding.
+	 * We'll poll for any non-zero state indicating the ROM is alive.
+	 */
+	dev_info(&dev->pdev->dev, "  Polling MT_CONN_ON_MISC for ROM ready (500ms)...\n");
+
+	for (i = 0; i < 500; i++) {
+		status = mt7927_rr_remap(dev, MT_CONN_ON_MISC);
+		state = status & MT_TOP_MISC2_FW_STATE;
+
+		if (i % 100 == 0)
+			dev_info(&dev->pdev->dev, "    [%dms] MT_CONN_ON_MISC=0x%08x state=%d\n",
+				 i, status, state);
+
+		/* Check if ROM indicates any activity */
+		if (status != 0 && status != 0xdeadbeef) {
+			dev_info(&dev->pdev->dev,
+				 "  ROM responding! MT_CONN_ON_MISC=0x%08x\n", status);
+			return 0;
+		}
+
+		/* Also check if N9_RDY bits are set */
+		if ((status & MT_TOP_MISC2_FW_N9_RDY) == MT_TOP_MISC2_FW_N9_RDY) {
+			dev_info(&dev->pdev->dev, "  ROM N9_RDY! Ready for commands.\n");
+			return 0;
+		}
+
+		usleep_range(1000, 2000);
+	}
+
+	/*
+	 * ROM didn't respond. This could mean:
+	 * 1. WFSYS reset didn't complete properly
+	 * 2. ROM is stuck waiting for something else
+	 * 3. Wrong register address for this chip variant
+	 *
+	 * Let's try an alternative approach - check WFSYS reset status again
+	 * and try alternative wake methods.
+	 */
+	dev_warn(&dev->pdev->dev, "  ROM not responding after 500ms!\n");
+
+	/* Check WFSYS status */
+	status = mt7927_rr_remap(dev, MT_WFSYS_SW_RST_B);
+	dev_info(&dev->pdev->dev, "  WFSYS_SW_RST_B=0x%08x (INIT_DONE=%d)\n",
+		 status, !!(status & WFSYS_SW_INIT_DONE));
+
+	/* Try alternative: write to MCU command register with different flags */
+	dev_info(&dev->pdev->dev, "  Trying NORMAL_STATE wake...\n");
+	mt7927_wr(dev, MT_MCU_CMD, MT_MCU_CMD_NORMAL_STATE);
+	msleep(10);
+
+	status = mt7927_rr_remap(dev, MT_CONN_ON_MISC);
+	dev_info(&dev->pdev->dev, "  After NORMAL_STATE: MT_CONN_ON_MISC=0x%08x\n", status);
+
+	/*
+	 * Even if ROM doesn't respond to our wake attempts, let's try
+	 * firmware download anyway - the ROM might be polling the rings
+	 * but not updating status registers.
+	 */
+	dev_info(&dev->pdev->dev, "  Continuing with firmware download attempt...\n");
+
+	return 0;  /* Don't fail - let's see what happens with DMA */
+}
+
 static int mt7927_load_firmware(struct mt7927_dev *dev)
 {
 	int ret;
@@ -2195,6 +2364,16 @@ static int mt7927_load_firmware(struct mt7927_dev *dev)
 	}
 
 	dev_info(&dev->pdev->dev, "  MCU DMA buffer at %pad\n", &dev->mcu_dma);
+
+	/*
+	 * v0.9.0: Wait for ROM bootloader to be ready before firmware download.
+	 * This addresses the dma_idx stuck at 0 issue from v0.8.0.
+	 */
+	ret = mt7927_wait_for_rom_ready(dev);
+	if (ret) {
+		dev_warn(&dev->pdev->dev, "  ROM ready wait failed: %d\n", ret);
+		/* Continue anyway */
+	}
 
 	/* Check firmware status before download */
 	status = mt7927_rr_remap(dev, MT_CONN_ON_MISC);
