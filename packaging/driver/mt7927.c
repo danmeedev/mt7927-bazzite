@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.10.0"
+#define DRV_VERSION "0.10.1"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -41,6 +41,10 @@ MODULE_PARM_DESC(try_alt_reset, "Try alternative MT7921 reset address (default: 
 static bool disable_aspm = false;
 module_param(disable_aspm, bool, 0644);
 MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
+
+static bool skip_pci_reset = true;  /* v0.10.1: Disabled by default - caused hang! */
+module_param(skip_pci_reset, bool, 0644);
+MODULE_PARM_DESC(skip_pci_reset, "Skip PCI function-level reset (default: true)");
 
 /* =============================================================================
  * Register Definitions (from mt7925/mt76 analysis)
@@ -2444,12 +2448,16 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 * This is especially important if a previous driver load left the
 	 * device in a bad state (e.g., ROM confused by incorrect DMA descriptors).
 	 */
-	dev_info(&pdev->dev, "  Attempting PCI function-level reset...\n");
-	if (pci_reset_function(pdev) == 0) {
-		dev_info(&pdev->dev, "  PCI FLR successful\n");
-		msleep(100);  /* Give device time to reinitialize */
+	if (!skip_pci_reset) {
+		dev_info(&pdev->dev, "  Attempting PCI function-level reset...\n");
+		if (pci_reset_function(pdev) == 0) {
+			dev_info(&pdev->dev, "  PCI FLR successful\n");
+			msleep(100);  /* Give device time to reinitialize */
+		} else {
+			dev_info(&pdev->dev, "  PCI FLR not supported or failed (non-fatal)\n");
+		}
 	} else {
-		dev_info(&pdev->dev, "  PCI FLR not supported or failed (non-fatal)\n");
+		dev_info(&pdev->dev, "  Skipping PCI FLR (skip_pci_reset=1)\n");
 	}
 
 	ret = pcim_enable_device(pdev);
