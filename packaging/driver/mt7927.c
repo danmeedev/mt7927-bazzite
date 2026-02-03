@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.3.0"
+#define DRV_VERSION "0.3.1"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -704,6 +704,21 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 
 	val_after = mt7927_rr_remap(dev, addr);
 	dev_info(&dev->pdev->dev, "  WFSYS reset COMPLETE: 0x%08x\n", val_after);
+
+	/*
+	 * CRITICAL: After WFSYS reset, the WFDMA block is reset to defaults
+	 * which has clock gating ENABLED. We must disable clock gating
+	 * IMMEDIATELY after reset, before any DMA register access.
+	 * Without this, DMA ring registers will be inaccessible!
+	 */
+	dev_info(&dev->pdev->dev, "  Post-reset: Disabling WFDMA clock gating...\n");
+	{
+		u32 glo_cfg = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+		dev_info(&dev->pdev->dev, "  GLO_CFG after reset: 0x%08x\n", glo_cfg);
+		mt7927_set(dev, MT_WFDMA0_GLO_CFG, MT_WFDMA0_GLO_CFG_CLK_GAT_DIS);
+		glo_cfg = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+		dev_info(&dev->pdev->dev, "  GLO_CFG after CLK_GAT_DIS: 0x%08x\n", glo_cfg);
+	}
 
 	return 0;
 }
