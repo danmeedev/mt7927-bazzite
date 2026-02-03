@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.4.2"
+#define DRV_VERSION "0.4.3"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -1287,15 +1287,31 @@ static int mt7927_dma_tx_queue_fw(struct mt7927_dev *dev, dma_addr_t data_dma,
 		return -EBUSY;
 	}
 
-	/* Fill descriptor */
+	/*
+	 * Fill descriptor - MT76 descriptor format:
+	 *   buf0: lower 32 bits of DMA address
+	 *   ctrl: control flags (length, last segment, etc)
+	 *   buf1: upper 32 bits of DMA address (for 64-bit)
+	 *   info: additional metadata (token, etc)
+	 *
+	 * v0.4.3: Set info to 0 and ensure ctrl has correct format.
+	 * The kernel driver also sets BURST bit for firmware downloads.
+	 */
 	desc->buf0 = cpu_to_le32(lower_32_bits(data_dma));
 	desc->buf1 = cpu_to_le32(upper_32_bits(data_dma));
 	desc->info = 0;
 
-	/* Control: length + last segment + clear DMA_DONE */
+	/* Control: length + last segment + burst mode */
 	ctrl = FIELD_PREP(MT_DMA_CTL_SD_LEN0, data_len) |
-	       MT_DMA_CTL_LAST_SEC0;
+	       MT_DMA_CTL_LAST_SEC0 |
+	       MT_DMA_CTL_BURST;
 	desc->ctrl = cpu_to_le32(ctrl);
+
+	if (debug_regs)
+		dev_info(&dev->pdev->dev,
+			 "  Desc: buf0=0x%08x buf1=0x%08x ctrl=0x%08x info=0x%08x\n",
+			 le32_to_cpu(desc->buf0), le32_to_cpu(desc->buf1),
+			 le32_to_cpu(desc->ctrl), le32_to_cpu(desc->info));
 
 	/* Memory barrier before kicking DMA */
 	wmb();
@@ -1333,8 +1349,27 @@ static int mt7927_dma_tx_wait(struct mt7927_dev *dev, int timeout_ms)
 		usleep_range(1000, 2000);
 	}
 
-	dev_warn(&dev->pdev->dev,
-		 "  DMA wait timeout: cpu_idx=%d dma_idx=%d\n", cpu_idx, dma_idx);
+	/* Dump additional state on timeout for debugging */
+	{
+		u32 glo_cfg = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+		u32 int_sta = mt7927_rr(dev, MT_WFDMA0_HOST_INT_STA);
+		u32 pcie_int = mt7927_rr(dev, MT_PCIE_MAC_INT_STATUS);
+
+		dev_warn(&dev->pdev->dev,
+			 "  DMA wait timeout: cpu_idx=%d dma_idx=%d\n", cpu_idx, dma_idx);
+		dev_warn(&dev->pdev->dev,
+			 "  GLO_CFG=0x%08x INT_STA=0x%08x PCIE_INT=0x%08x\n",
+			 glo_cfg, int_sta, pcie_int);
+
+		/* Check descriptor state - use dma_idx to find last attempted desc */
+		if (dev->tx_ring && dma_idx < dev->tx_ring_size) {
+			struct mt76_desc *desc = &dev->tx_ring[dma_idx];
+			dev_warn(&dev->pdev->dev,
+				 "  Desc[%d]: buf0=0x%08x ctrl=0x%08x (DMA_DONE=%d)\n",
+				 dma_idx, le32_to_cpu(desc->buf0), le32_to_cpu(desc->ctrl),
+				 !!(le32_to_cpu(desc->ctrl) & MT_DMA_CTL_DMA_DONE));
+		}
+	}
 	return -ETIMEDOUT;
 }
 

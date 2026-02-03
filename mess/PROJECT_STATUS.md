@@ -130,6 +130,7 @@ The hardest part ahead is the MCU command protocol - it's complex and needs to m
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v0.4.3 | 2026-02-03 | **Add BURST flag and debug output** - v0.4.2 ring BASE works but IOMMU faults persist. Added MT_DMA_CTL_BURST to descriptor, added descriptor dump on timeout, added more state diagnostics. |
 | v0.4.2 | 2026-02-03 | **Fix ring BASE verification** - v0.4.1 caused IOMMU page faults because ring BASE=0. Added pre-DMA verification, CSR_DISP_BASE_PTR_CHAIN_EN flag before prefetch, and early abort if ring not writable. |
 | v0.4.1 | 2026-02-03 | **Fix section type check** - v0.4.0 was skipping all sections due to wrong type check. Now downloads all patch sections. |
 | v0.4.0 | 2026-02-03 | **Firmware DMA transfer via Ring 16.** Added MCU TXD construction, patch header parsing, and FW_SCATTER chunk transfer. First attempt at sending firmware to device. |
