@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.3.4"
+#define DRV_VERSION "0.4.0"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -207,9 +207,168 @@ struct mt76_desc {
 	__le32 info;
 } __packed __aligned(4);
 
+/*
+ * MCU TXD (Transmit Descriptor) for commands
+ * This is the 32-byte hardware descriptor prepended to MCU commands
+ */
+struct mt7927_mcu_txd {
+	__le32 txd[8];		/* Hardware descriptor (32 bytes) */
+} __packed __aligned(4);
+
+/*
+ * MCU command header following the TXD
+ * Used for non-firmware-scatter commands
+ */
+struct mt7927_mcu_hdr {
+	__le16 len;		/* Length excluding txd */
+	__le16 pq_id;		/* Priority queue ID */
+	u8 cid;			/* Command ID */
+	u8 pkt_type;		/* Must be 0xa0 (MCU_PKT_ID) */
+	u8 set_query;		/* Set/query flag */
+	u8 seq;			/* Sequence number */
+	u8 rsv0;
+	u8 ext_cid;		/* Extended command ID */
+	u8 s2d_index;		/* Source-to-destination routing */
+	u8 ext_cid_ack;		/* ACK for extended CID */
+	__le32 rsv1[5];		/* Reserved */
+} __packed;
+
+/*
+ * Firmware trailer structure (at end of firmware file)
+ */
+struct mt7927_fw_trailer {
+	u8 chip_id;
+	u8 eco_code;
+	u8 n_region;
+	u8 format_ver;
+	u8 format_flag;
+	u8 rsv[2];
+	char fw_ver[10];
+	char build_date[15];
+	__le32 crc;
+} __packed;
+
+/*
+ * Firmware region descriptor (parsed backwards from trailer)
+ */
+struct mt7927_fw_region {
+	__le32 decomp_crc;
+	__le32 decomp_len;
+	__le32 decomp_blk_sz;
+	u8 rsv[4];
+	__le32 addr;		/* Target memory address */
+	__le32 len;		/* Region length */
+	u8 feature_set;
+	u8 type;
+	u8 rsv1[14];
+} __packed;
+
+/*
+ * Patch header structure
+ */
+struct mt7927_patch_hdr {
+	char build_date[16];
+	char platform[4];
+	__be32 hw_sw_ver;
+	__be32 patch_ver;
+	__be16 checksum;
+	__le16 rsv;
+	struct {
+		__be32 patch_ver;
+		__be32 subsys;
+		__be32 feature;
+		__be32 n_region;
+		__be32 crc;
+		__le32 rsv[11];
+	} desc;
+} __packed;
+
+/* Patch region header */
+struct mt7927_patch_sec {
+	__be32 type;
+	__be32 offs;
+	__be32 size;
+	union {
+		__be32 spec[13];
+		struct {
+			__be32 addr;
+			__be32 len;
+			__be32 sec_key_idx;
+			__be32 align_len;
+			__le32 rsv[9];
+		} info;
+	};
+} __packed;
+
+/* Feature flags */
+#define FW_FEATURE_NON_DL		BIT(2)
+#define FW_FEATURE_OVERRIDE_ADDR	BIT(4)
+
 #define MT_DMA_CTL_SD_LEN0		GENMASK(15, 0)
 #define MT_DMA_CTL_LAST_SEC0		BIT(16)
+#define MT_DMA_CTL_BURST		BIT(17)
 #define MT_DMA_CTL_DMA_DONE		BIT(31)
+
+/* =============================================================================
+ * MCU Command Definitions
+ * =============================================================================
+ */
+
+/* MCU packet type */
+#define MT_MCU_PKT_ID			0xa0
+
+/* MCU TXD word 0 fields */
+#define MT_TXD0_TX_BYTES		GENMASK(15, 0)
+#define MT_TXD0_PKT_FMT			GENMASK(24, 23)
+#define MT_TXD0_Q_IDX			GENMASK(31, 25)
+
+/* Packet format types */
+#define MT_TX_TYPE_CT			0
+#define MT_TX_TYPE_SF			1
+#define MT_TX_TYPE_CMD			2
+#define MT_TX_TYPE_FW			3
+
+/* Queue indices */
+#define MT_TX_MCU_PORT_RX_Q0		0x20	/* MCU command queue */
+#define MT_TX_MCU_PORT_RX_FWDL		0x3e	/* Firmware download queue */
+
+/* MCU command IDs */
+#define MCU_CMD_TARGET_ADDRESS_LEN_REQ	0x01
+#define MCU_CMD_FW_START_REQ		0x02
+#define MCU_CMD_PATCH_START_REQ		0x05
+#define MCU_CMD_PATCH_FINISH_REQ	0x07
+#define MCU_CMD_PATCH_SEM_CTRL		0x10
+#define MCU_CMD_FW_SCATTER		0xee
+
+/* Patch semaphore operations */
+#define PATCH_SEM_GET			0x01
+#define PATCH_SEM_RELEASE		0x00
+
+/* Patch semaphore response */
+#define PATCH_NOT_DL_SEM_SUCCESS	0x02
+#define PATCH_SEC_TYPE_NEED_DOWNLOAD	0x00
+
+/* Download mode flags */
+#define DL_MODE_ENCRYPT			BIT(0)
+#define DL_MODE_KEY_IDX			GENMASK(2, 1)
+#define DL_MODE_RESET_SEC_IV		BIT(3)
+#define DL_MODE_WORKING_PDA_CR4		BIT(4)
+#define DL_MODE_VALID_RAM_ENTRY		BIT(5)
+#define DL_MODE_NEED_RSP		BIT(31)
+
+/* Firmware chunk size */
+#define MT7927_FW_CHUNK_SIZE		4096
+
+/* MCU S2D (Source to Destination) routing */
+#define MCU_S2D_H2N			0x00	/* Host to WiFi Manager (N9) */
+#define MCU_S2D_C2N			0x01	/* WA to WM */
+#define MCU_S2D_H2C			0x02	/* Host to WiFi Accelerator */
+#define MCU_S2D_H2CN			0x03	/* Host to both */
+
+/* MCU command option flags */
+#define MCU_CMD_ACK			BIT(0)
+#define MCU_CMD_UNI			BIT(1)
+#define MCU_CMD_SET			BIT(2)
 
 /* =============================================================================
  * Device Structure
@@ -225,16 +384,23 @@ struct mt7927_dev {
 	struct mt76_desc *tx_ring;
 	dma_addr_t tx_ring_dma;
 	int tx_ring_size;
+	int tx_ring_head;		/* Next descriptor to use */
+	int tx_ring_tail;		/* Next descriptor to complete */
 
 	/* Firmware buffer */
 	void *fw_buf;
 	dma_addr_t fw_dma;
 	size_t fw_size;
 
+	/* MCU command buffer (for scatter commands) */
+	void *mcu_buf;
+	dma_addr_t mcu_dma;
+
 	/* State */
 	bool aspm_supported;
 	u32 chip_rev;
 	u32 chip_id;
+	u8 mcu_seq;			/* MCU command sequence number */
 };
 
 /* =============================================================================
@@ -989,6 +1155,12 @@ static void mt7927_dma_cleanup(struct mt7927_dev *dev)
 {
 	mt7927_dma_disable(dev, false);
 
+	if (dev->mcu_buf) {
+		dma_free_coherent(&dev->pdev->dev, MT7927_FW_CHUNK_SIZE + 256,
+				  dev->mcu_buf, dev->mcu_dma);
+		dev->mcu_buf = NULL;
+	}
+
 	if (dev->fw_buf) {
 		dma_free_coherent(&dev->pdev->dev, dev->fw_size,
 				  dev->fw_buf, dev->fw_dma);
@@ -1004,17 +1176,216 @@ static void mt7927_dma_cleanup(struct mt7927_dev *dev)
 }
 
 /* =============================================================================
- * Firmware Loading
+ * Firmware Loading via DMA Ring 16
  * =============================================================================
  */
 
-static int mt7927_load_firmware(struct mt7927_dev *dev)
+/*
+ * Build MCU TXD word 0 for firmware scatter
+ */
+static u32 mt7927_mcu_txd0_fw(u16 len)
+{
+	return FIELD_PREP(MT_TXD0_TX_BYTES, len) |
+	       FIELD_PREP(MT_TXD0_PKT_FMT, MT_TX_TYPE_FW) |
+	       FIELD_PREP(MT_TXD0_Q_IDX, MT_TX_MCU_PORT_RX_FWDL);
+}
+
+/*
+ * Get next MCU sequence number (1-15, wraps)
+ * Used for MCU command acknowledgment (not yet implemented)
+ */
+static u8 __maybe_unused mt7927_mcu_next_seq(struct mt7927_dev *dev)
+{
+	dev->mcu_seq = (dev->mcu_seq + 1) & 0xf;
+	if (dev->mcu_seq == 0)
+		dev->mcu_seq = 1;
+	return dev->mcu_seq;
+}
+
+/*
+ * Queue a firmware chunk to the FWDL ring (ring 16)
+ *
+ * This sets up a DMA descriptor pointing to the firmware data
+ * and kicks the DMA engine.
+ */
+static int mt7927_dma_tx_queue_fw(struct mt7927_dev *dev, dma_addr_t data_dma,
+				  int data_len)
+{
+	struct mt76_desc *desc;
+	u32 ctrl;
+	int idx;
+
+	idx = dev->tx_ring_head;
+	desc = &dev->tx_ring[idx];
+
+	/* Check if descriptor is available (DMA_DONE should be set for unused) */
+	ctrl = le32_to_cpu(desc->ctrl);
+	if (!(ctrl & MT_DMA_CTL_DMA_DONE) && ctrl != 0) {
+		dev_warn(&dev->pdev->dev, "  Ring full at idx %d, ctrl=0x%08x\n",
+			 idx, ctrl);
+		return -EBUSY;
+	}
+
+	/* Fill descriptor */
+	desc->buf0 = cpu_to_le32(lower_32_bits(data_dma));
+	desc->buf1 = cpu_to_le32(upper_32_bits(data_dma));
+	desc->info = 0;
+
+	/* Control: length + last segment + clear DMA_DONE */
+	ctrl = FIELD_PREP(MT_DMA_CTL_SD_LEN0, data_len) |
+	       MT_DMA_CTL_LAST_SEC0;
+	desc->ctrl = cpu_to_le32(ctrl);
+
+	/* Memory barrier before kicking DMA */
+	wmb();
+
+	/* Advance head */
+	dev->tx_ring_head = (idx + 1) % dev->tx_ring_size;
+
+	/* Kick DMA - write CPU index to register */
+	mt7927_wr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE + 0x08,
+		  dev->tx_ring_head);
+
+	if (debug_regs)
+		dev_info(&dev->pdev->dev,
+			 "  TX queue: idx=%d, len=%d, dma=%pad, new_head=%d\n",
+			 idx, data_len, &data_dma, dev->tx_ring_head);
+
+	return 0;
+}
+
+/*
+ * Wait for DMA ring to drain (all descriptors completed)
+ */
+static int mt7927_dma_tx_wait(struct mt7927_dev *dev, int timeout_ms)
+{
+	u32 cpu_idx, dma_idx;
+	int i;
+
+	for (i = 0; i < timeout_ms; i++) {
+		cpu_idx = mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE + 0x08);
+		dma_idx = mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE + 0x0c);
+
+		if (cpu_idx == dma_idx)
+			return 0;
+
+		usleep_range(1000, 2000);
+	}
+
+	dev_warn(&dev->pdev->dev,
+		 "  DMA wait timeout: cpu_idx=%d dma_idx=%d\n", cpu_idx, dma_idx);
+	return -ETIMEDOUT;
+}
+
+/*
+ * Send a firmware scatter chunk
+ *
+ * Each chunk is wrapped with an MCU TXD header and sent via ring 16.
+ * The TXD is 32 bytes (8 DWORDs), followed by the firmware data.
+ */
+static int mt7927_mcu_send_fw_chunk(struct mt7927_dev *dev, const void *data,
+				    int len, u32 offset, bool last)
+{
+	struct mt7927_mcu_txd *txd;
+	int total_len;
+	int ret;
+
+	/* Total packet = TXD (32 bytes) + data */
+	total_len = sizeof(struct mt7927_mcu_txd) + len;
+
+	/* Check if MCU buffer is large enough */
+	if (total_len > MT7927_FW_CHUNK_SIZE + sizeof(struct mt7927_mcu_txd)) {
+		dev_err(&dev->pdev->dev, "  FW chunk too large: %d\n", total_len);
+		return -EINVAL;
+	}
+
+	/* Build TXD in MCU buffer */
+	txd = dev->mcu_buf;
+	memset(txd, 0, sizeof(*txd));
+
+	/* TXD word 0: packet length + format + queue */
+	txd->txd[0] = cpu_to_le32(mt7927_mcu_txd0_fw(total_len));
+
+	/* TXD word 1: reserved */
+	txd->txd[1] = 0;
+
+	/* Copy firmware data after TXD */
+	memcpy(dev->mcu_buf + sizeof(*txd), data, len);
+
+	/* Ensure data is visible to DMA */
+	dma_sync_single_for_device(&dev->pdev->dev, dev->mcu_dma,
+				   total_len, DMA_TO_DEVICE);
+
+	/* Queue to DMA ring */
+	ret = mt7927_dma_tx_queue_fw(dev, dev->mcu_dma, total_len);
+	if (ret)
+		return ret;
+
+	/* Wait for this chunk to complete before sending next */
+	ret = mt7927_dma_tx_wait(dev, 100);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "  FW chunk DMA timeout at offset 0x%x\n",
+			offset);
+		return ret;
+	}
+
+	return 0;
+}
+
+/*
+ * Send firmware data in chunks via FW_SCATTER command
+ *
+ * The firmware is split into 4KB chunks, each wrapped with an MCU TXD
+ * and sent via the FWDL ring (ring 16).
+ */
+static int mt7927_mcu_send_firmware(struct mt7927_dev *dev, const void *data,
+				    int len)
+{
+	int chunk_size = MT7927_FW_CHUNK_SIZE;
+	u32 offset = 0;
+	int ret;
+
+	dev_info(&dev->pdev->dev, "  Sending %d bytes in %d-byte chunks...\n",
+		 len, chunk_size);
+
+	while (len > 0) {
+		int cur_len = min(len, chunk_size);
+		bool last = (len <= chunk_size);
+
+		if (debug_regs && (offset % (64 * 1024) == 0 || last))
+			dev_info(&dev->pdev->dev, "    Chunk: offset=0x%x len=%d%s\n",
+				 offset, cur_len, last ? " (last)" : "");
+
+		ret = mt7927_mcu_send_fw_chunk(dev, data, cur_len, offset, last);
+		if (ret) {
+			dev_err(&dev->pdev->dev,
+				"  Failed to send chunk at offset 0x%x: %d\n",
+				offset, ret);
+			return ret;
+		}
+
+		data += cur_len;
+		offset += cur_len;
+		len -= cur_len;
+	}
+
+	dev_info(&dev->pdev->dev, "  Firmware data sent: %d bytes total\n", offset);
+	return 0;
+}
+
+/*
+ * Parse patch firmware and send to device
+ */
+static int mt7927_load_patch(struct mt7927_dev *dev)
 {
 	const struct firmware *fw;
-	int ret;
-	u32 status;
+	const struct mt7927_patch_hdr *hdr;
+	const struct mt7927_patch_sec *sec;
+	const u8 *fw_data;
+	u32 n_section;
+	int ret, i;
 
-	dev_info(&dev->pdev->dev, "=== Firmware Loading ===\n");
+	dev_info(&dev->pdev->dev, "=== Loading Patch Firmware ===\n");
 
 	/* Request patch firmware */
 	ret = request_firmware(&fw,
@@ -1028,30 +1399,132 @@ static int mt7927_load_firmware(struct mt7927_dev *dev)
 
 	dev_info(&dev->pdev->dev, "  Patch firmware loaded: %zu bytes\n", fw->size);
 
-	/* Allocate DMA buffer for firmware */
-	dev->fw_size = ALIGN(fw->size, 4);
-	dev->fw_buf = dma_alloc_coherent(&dev->pdev->dev, dev->fw_size,
-					 &dev->fw_dma, GFP_KERNEL);
-	if (!dev->fw_buf) {
-		release_firmware(fw);
+	if (fw->size < sizeof(*hdr)) {
+		dev_err(&dev->pdev->dev, "  Patch file too small\n");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	/* Parse patch header */
+	hdr = (const struct mt7927_patch_hdr *)fw->data;
+
+	dev_info(&dev->pdev->dev, "  Patch build: %.16s\n", hdr->build_date);
+	dev_info(&dev->pdev->dev, "  Platform: %.4s\n", hdr->platform);
+	dev_info(&dev->pdev->dev, "  HW/SW version: 0x%08x\n",
+		 be32_to_cpu(hdr->hw_sw_ver));
+	dev_info(&dev->pdev->dev, "  Patch version: 0x%08x\n",
+		 be32_to_cpu(hdr->patch_ver));
+
+	n_section = be32_to_cpu(hdr->desc.n_region);
+	dev_info(&dev->pdev->dev, "  Number of sections: %d\n", n_section);
+
+	if (n_section == 0 || n_section > 64) {
+		dev_err(&dev->pdev->dev, "  Invalid section count: %d\n", n_section);
+		ret = -EINVAL;
+		goto out;
+	}
+
+	/* Section headers follow the main header */
+	sec = (const struct mt7927_patch_sec *)(fw->data + sizeof(*hdr));
+
+	/* Process each section */
+	for (i = 0; i < n_section; i++) {
+		u32 sec_type = be32_to_cpu(sec[i].type);
+		u32 sec_offs = be32_to_cpu(sec[i].offs);
+		u32 sec_size = be32_to_cpu(sec[i].size);
+		u32 sec_addr = be32_to_cpu(sec[i].info.addr);
+
+		dev_info(&dev->pdev->dev,
+			 "  Section %d: type=0x%x offs=0x%x size=%d addr=0x%08x\n",
+			 i, sec_type, sec_offs, sec_size, sec_addr);
+
+		/* Check bounds */
+		if (sec_offs + sec_size > fw->size) {
+			dev_err(&dev->pdev->dev,
+				"  Section %d exceeds file size\n", i);
+			ret = -EINVAL;
+			goto out;
+		}
+
+		/* Skip non-downloadable sections */
+		if (sec_type == PATCH_SEC_TYPE_NEED_DOWNLOAD) {
+			fw_data = fw->data + sec_offs;
+
+			dev_info(&dev->pdev->dev,
+				 "  Downloading section %d (%d bytes) to 0x%08x...\n",
+				 i, sec_size, sec_addr);
+
+			ret = mt7927_mcu_send_firmware(dev, fw_data, sec_size);
+			if (ret) {
+				dev_err(&dev->pdev->dev,
+					"  Section %d download failed: %d\n", i, ret);
+				goto out;
+			}
+		} else {
+			dev_info(&dev->pdev->dev,
+				 "  Skipping section %d (type 0x%x)\n", i, sec_type);
+		}
+	}
+
+	dev_info(&dev->pdev->dev, "  Patch firmware download complete\n");
+	ret = 0;
+
+out:
+	release_firmware(fw);
+	return ret;
+}
+
+static int mt7927_load_firmware(struct mt7927_dev *dev)
+{
+	int ret;
+	u32 status;
+
+	dev_info(&dev->pdev->dev, "=== Firmware Loading ===\n");
+
+	/* Allocate MCU command buffer for DMA */
+	dev->mcu_buf = dma_alloc_coherent(&dev->pdev->dev,
+					  MT7927_FW_CHUNK_SIZE + 256,
+					  &dev->mcu_dma, GFP_KERNEL);
+	if (!dev->mcu_buf) {
+		dev_err(&dev->pdev->dev, "  Failed to allocate MCU buffer\n");
 		return -ENOMEM;
 	}
 
-	memcpy(dev->fw_buf, fw->data, fw->size);
-	release_firmware(fw);
+	dev_info(&dev->pdev->dev, "  MCU DMA buffer at %pad\n", &dev->mcu_dma);
 
-	dev_info(&dev->pdev->dev, "  Firmware DMA buffer at %pad\n", &dev->fw_dma);
-
-	/* Check current firmware status - use remapped access */
+	/* Check firmware status before download */
 	status = mt7927_rr_remap(dev, MT_CONN_ON_MISC);
-	dev_info(&dev->pdev->dev, "  MT_CONN_ON_MISC: 0x%08x\n", status);
+	dev_info(&dev->pdev->dev, "  MT_CONN_ON_MISC before: 0x%08x\n", status);
+
+	/* Initialize ring head/tail */
+	dev->tx_ring_head = 0;
+	dev->tx_ring_tail = 0;
+	dev->mcu_seq = 0;
+
+	/* Load and download patch firmware */
+	ret = mt7927_load_patch(dev);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "  Patch loading failed: %d\n", ret);
+		/* Continue to check status anyway */
+	}
+
+	/* Check firmware status after download */
+	status = mt7927_rr_remap(dev, MT_CONN_ON_MISC);
+	dev_info(&dev->pdev->dev, "  MT_CONN_ON_MISC after: 0x%08x\n", status);
 
 	/*
-	 * TODO: Implement full MCU command protocol
-	 * For now, just verify the setup works.
+	 * Expected: bits 0-1 should become 0x3 when firmware is ready.
+	 * If still 0, the firmware hasn't started (expected at this stage
+	 * since we haven't sent the start command yet).
 	 */
+	if ((status & MT_TOP_MISC2_FW_N9_RDY) == MT_TOP_MISC2_FW_N9_RDY) {
+		dev_info(&dev->pdev->dev, "  Firmware N9 is READY!\n");
+	} else {
+		dev_info(&dev->pdev->dev,
+			 "  Firmware not ready yet (need FW_START command)\n");
+	}
 
-	return 0;
+	return ret;
 }
 
 /* =============================================================================

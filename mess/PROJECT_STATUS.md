@@ -50,17 +50,17 @@
 ## Roadmap
 
 ```
-Phase 1: Hardware Bring-up     [====>-----] ~50%
+Phase 1: Hardware Bring-up     [=========>] ~100%
   ✓ PCI enumeration
   ✓ Register access (direct + remap)
   ✓ WFSYS reset
-  ? DMA ring setup (v0.2.3 testing)
+  ✓ DMA ring setup (v0.3.4 - leave RST bits SET!)
 
-Phase 2: Firmware Boot         [----------] 0%
-  - DMA firmware transfer
-  - MCU command interface
+Phase 2: Firmware Boot         [===>------] ~30%
+  ✓ DMA firmware transfer via Ring 16 (v0.4.0)
+  - MCU command interface (init_download, start commands)
   - Firmware handshake
-  - Verify FW running
+  - Verify FW running (poll MT_CONN_ON_MISC)
 
 Phase 3: WiFi Initialization   [----------] 0%
   - MAC address retrieval
@@ -81,12 +81,13 @@ Phase 5: Polish                [----------] 0%
 
 ---
 
-## Immediate Next Steps (after v0.3.0 test)
+## Immediate Next Steps (v0.4.0+)
 
-1. **Confirm DMA rings configure correctly** - RING16_BASE/CNT should now show OK (v0.3.0 adds prefetch config)
-2. **Confirm prefetch registers write** - TX_RING16_EXT_CTRL should show 0x05400004
-3. **Implement firmware DMA transfer** - Actually send firmware to device
-4. **Implement MCU command protocol** - Based on mt7925 mcu.c patterns
+1. **Test v0.4.0** - Verify patch firmware DMA transfer works
+2. **Check DMA completion** - cpu_idx should equal dma_idx after transfer
+3. **Add MCU init_download command** - Send TARGET_ADDRESS_LEN_REQ before data
+4. **Add MCU start command** - Send FW_START_REQ after transfer
+5. **Poll MT_CONN_ON_MISC** - Check bits 0-1 for FW_N9_RDY (0x3)
 5. **Check MT_CONN_ON_MISC for FW ready** - Currently shows 0x00000000
 
 ### Key Discovery (v0.3.0)
@@ -129,7 +130,9 @@ The hardest part ahead is the MCU command protocol - it's complex and needs to m
 
 | Version | Date | Changes |
 |---------|------|---------|
-| v0.3.0 | 2026-02-03 | **KEY FIX:** Add DMA ring prefetch configuration (MT_WFDMA0_TX_RING16_EXT_CTRL). This was the missing step causing RING16_BASE/CNT writes to fail. |
+| v0.4.0 | 2026-02-03 | **Firmware DMA transfer via Ring 16.** Added MCU TXD construction, patch header parsing, and FW_SCATTER chunk transfer. First attempt at sending firmware to device. |
+| v0.3.4 | 2026-02-03 | **KEY FIX:** Leave LOGIC_RST bits SET (kernel pattern). This fixed ring register writes. |
+| v0.3.0 | 2026-02-03 | Add DMA ring prefetch configuration (MT_WFDMA0_TX_RING16_EXT_CTRL). |
 | v0.2.3 | 2026-02-03 | Fix Chip ID remap, DMASHDL remap, DMA clock gating |
 | v0.2.2 | 2026-02-03 | Reduce timeouts for faster debug feedback |
 | v0.2.1 | 2026-02-03 | Add HIF_REMAP for high address registers |
