@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.2.2"
+#define DRV_VERSION "0.2.3"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -704,11 +704,15 @@ static int mt7927_dma_disable(struct mt7927_dev *dev, bool force)
 			~MT_WFDMA0_GLO_CFG_EXT0_TX_DMASHDL_EN,
 			"GLO_CFG_EXT0");
 
-	/* Set DMASHDL bypass */
-	mt7927_wr_debug(dev, MT_DMASHDL_SW_CONTROL,
-			mt7927_rr(dev, MT_DMASHDL_SW_CONTROL) |
-			MT_DMASHDL_DMASHDL_BYPASS,
-			"DMASHDL_SW_CONTROL");
+	/* Set DMASHDL bypass - register at 0x7c026004 needs remap */
+	dev_info(&dev->pdev->dev, "  Setting DMASHDL bypass via remap...\n");
+	{
+		u32 dmashdl_val = mt7927_rr_remap(dev, MT_DMASHDL_SW_CONTROL);
+		mt7927_wr_remap(dev, MT_DMASHDL_SW_CONTROL,
+				dmashdl_val | MT_DMASHDL_DMASHDL_BYPASS);
+		dev_info(&dev->pdev->dev, "  DMASHDL_SW_CONTROL: 0x%08x -> 0x%08x\n",
+			 dmashdl_val, mt7927_rr_remap(dev, MT_DMASHDL_SW_CONTROL));
+	}
 
 	if (force) {
 		dev_info(&dev->pdev->dev, "  Force reset sequence...\n");
@@ -788,6 +792,7 @@ static int mt7927_dma_enable(struct mt7927_dev *dev)
 static int mt7927_dma_init(struct mt7927_dev *dev)
 {
 	int ret;
+	u32 val;
 
 	dev_info(&dev->pdev->dev, "=== DMA Initialization ===\n");
 
@@ -795,6 +800,18 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	ret = mt7927_dma_disable(dev, true);
 	if (ret)
 		return ret;
+
+	/*
+	 * CRITICAL: Disable clock gating BEFORE configuring ring registers!
+	 * With clock gating enabled, WFDMA ring registers may not accept writes.
+	 * This is why RING16_BASE/CNT writes were showing MISMATCH.
+	 */
+	dev_info(&dev->pdev->dev, "  Disabling clock gating before ring config...\n");
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "  GLO_CFG before CLK_GAT_DIS: 0x%08x\n", val);
+	mt7927_set(dev, MT_WFDMA0_GLO_CFG, MT_WFDMA0_GLO_CFG_CLK_GAT_DIS);
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "  GLO_CFG after CLK_GAT_DIS:  0x%08x\n", val);
 
 	/* Allocate TX descriptor ring */
 	dev->tx_ring_size = MT7927_TX_FWDL_RING_SIZE;
@@ -812,7 +829,7 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	dev_info(&dev->pdev->dev, "  TX ring allocated: %d descriptors at %pad\n",
 		 dev->tx_ring_size, &dev->tx_ring_dma);
 
-	/* Configure FWDL ring (ring 16) */
+	/* Configure FWDL ring (ring 16) - now should work with clock gating disabled */
 	dev_info(&dev->pdev->dev, "  Configuring FWDL ring (ring 16)...\n");
 	mt7927_wr_debug(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE,
 			lower_32_bits(dev->tx_ring_dma), "RING16_BASE");
@@ -1000,14 +1017,16 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* === Phase 3: Read Chip ID === */
 	dev_info(&pdev->dev, "\n=== Phase 3: Chip Identification ===\n");
 
-	dev->chip_id = mt7927_rr(dev, MT_HW_CHIPID);
-	dev->chip_rev = (dev->chip_id << 16) | (mt7927_rr(dev, MT_HW_REV) & 0xff);
+	/* Chip ID registers are at 0x70010200/0x70010204 - need remap access */
+	dev_info(&pdev->dev, "  Reading Chip ID via remap (0x70010200)...\n");
+	dev->chip_id = mt7927_rr_remap(dev, MT_HW_CHIPID);
+	dev->chip_rev = (dev->chip_id << 16) | (mt7927_rr_remap(dev, MT_HW_REV) & 0xff);
 
 	dev_info(&pdev->dev, "  Chip ID: 0x%08x\n", dev->chip_id);
 	dev_info(&pdev->dev, "  Chip Rev: 0x%08x\n", dev->chip_rev);
 
-	if (dev->chip_id == 0xffffffff) {
-		dev_err(&pdev->dev, "  ERROR: Chip not responding (0xffffffff)\n");
+	if (dev->chip_id == 0xffffffff || dev->chip_id == 0xdeadbeef) {
+		dev_err(&pdev->dev, "  ERROR: Chip not responding (0x%08x)\n", dev->chip_id);
 	}
 
 	/* === Phase 4: EMI Sleep Protection === */
