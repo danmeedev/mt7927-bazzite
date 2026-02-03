@@ -36,11 +36,26 @@ mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
 echo "[1/6] Cloning Linux kernel (sparse checkout for mt76 only)..."
-git clone --depth=1 --filter=blob:none --sparse https://github.com/torvalds/linux.git
+# Use a stable tag that matches closer to the running kernel
+# v6.12 is a good stable base that doesn't have bleeding-edge dependencies
+git clone --depth=1 --branch v6.12 --filter=blob:none --sparse https://github.com/torvalds/linux.git
 cd linux
 git sparse-checkout set drivers/net/wireless/mediatek/mt76
 
 cd drivers/net/wireless/mediatek/mt76
+
+# Create stub header for airoha_offload.h if the include exists but header is missing
+if grep -q "airoha_offload.h" mt76.h 2>/dev/null; then
+    echo "Creating stub for airoha_offload.h..."
+    mkdir -p linux/soc/airoha
+    cat > linux/soc/airoha/airoha_offload.h << 'STUB'
+/* Stub header for out-of-tree build */
+#ifndef __AIROHA_OFFLOAD_H
+#define __AIROHA_OFFLOAD_H
+/* Empty stub - Airoha offload not needed for MT7925/MT7927 */
+#endif
+STUB
+fi
 
 echo ""
 echo "[2/6] Checking current MT7925 PCI IDs..."
@@ -82,6 +97,7 @@ KDIR ?= /lib/modules/$(KERNEL_VERSION)/build
 # Enable required configs
 ccflags-y += -DCONFIG_MT76_LEDS
 ccflags-y += -DCONFIG_MAC80211_DEBUGFS
+ccflags-y += -I$(M)
 
 obj-m += mt76.o
 obj-m += mt76-connac-lib.o
