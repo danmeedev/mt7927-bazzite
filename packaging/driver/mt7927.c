@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.9.0"
+#define DRV_VERSION "0.10.0"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -2439,6 +2439,19 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* === Phase 1: PCI Setup === */
 	dev_info(&pdev->dev, "\n=== Phase 1: PCI Setup ===\n");
 
+	/*
+	 * v0.10.0: Try PCI function-level reset (FLR) to ensure clean state.
+	 * This is especially important if a previous driver load left the
+	 * device in a bad state (e.g., ROM confused by incorrect DMA descriptors).
+	 */
+	dev_info(&pdev->dev, "  Attempting PCI function-level reset...\n");
+	if (pci_reset_function(pdev) == 0) {
+		dev_info(&pdev->dev, "  PCI FLR successful\n");
+		msleep(100);  /* Give device time to reinitialize */
+	} else {
+		dev_info(&pdev->dev, "  PCI FLR not supported or failed (non-fatal)\n");
+	}
+
 	ret = pcim_enable_device(pdev);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to enable PCI device\n");
@@ -2503,16 +2516,37 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* === Phase 3: Read Chip ID === */
 	dev_info(&pdev->dev, "\n=== Phase 3: Chip Identification ===\n");
 
-	/* Chip ID registers are at 0x70010200/0x70010204 - need remap access */
+	/*
+	 * v0.10.0: Check chip ID from multiple sources to verify remap is working.
+	 * The kernel driver reads chip ID from different registers depending on chip variant.
+	 */
+
+	/* Try primary address 0x70010200 */
 	dev_info(&pdev->dev, "  Reading Chip ID via remap (0x70010200)...\n");
 	dev->chip_id = mt7927_rr_remap(dev, MT_HW_CHIPID);
-	dev->chip_rev = (dev->chip_id << 16) | (mt7927_rr_remap(dev, MT_HW_REV) & 0xff);
+	dev->chip_rev = mt7927_rr_remap(dev, MT_HW_REV);
+	dev_info(&pdev->dev, "  Primary: Chip ID: 0x%08x, Rev: 0x%08x\n",
+		 dev->chip_id, dev->chip_rev);
 
-	dev_info(&pdev->dev, "  Chip ID: 0x%08x\n", dev->chip_id);
-	dev_info(&pdev->dev, "  Chip Rev: 0x%08x\n", dev->chip_rev);
+	/* Also try alternative address used by some chips */
+	{
+		u32 alt_id = mt7927_rr_remap(dev, 0x18060014);  /* MT_TOP_HCR */
+		u32 alt_id2 = mt7927_rr_remap(dev, 0x18060010); /* MT_TOP_HVR */
+		dev_info(&pdev->dev, "  Alternative: TOP_HCR=0x%08x TOP_HVR=0x%08x\n",
+			 alt_id, alt_id2);
+	}
 
-	if (dev->chip_id == 0xffffffff || dev->chip_id == 0xdeadbeef) {
-		dev_err(&pdev->dev, "  ERROR: Chip not responding (0x%08x)\n", dev->chip_id);
+	/* Check PCI config space for device ID (this should always work) */
+	{
+		u16 pci_dev_id;
+		pci_read_config_word(pdev, PCI_DEVICE_ID, &pci_dev_id);
+		dev_info(&pdev->dev, "  PCI Device ID: 0x%04x (from config space)\n", pci_dev_id);
+	}
+
+	if (dev->chip_id == 0xffffffff || dev->chip_id == 0xdeadbeef ||
+	    dev->chip_id == 0x7fff0000) {
+		dev_warn(&pdev->dev, "  WARNING: Unusual Chip ID 0x%08x\n", dev->chip_id);
+		dev_warn(&pdev->dev, "  This may indicate remap not working or chip in reset\n");
 	}
 
 	/* === Phase 4: EMI Sleep Protection === */
