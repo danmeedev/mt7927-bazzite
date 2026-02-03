@@ -2,7 +2,7 @@
 
 ## Current State: **Early Hardware Bring-up**
 
-**v0.2.3** - Driver loads, basic register access working, no WiFi functionality yet.
+**v0.3.0** - Added DMA ring prefetch configuration based on mt76 kernel source analysis.
 
 ---
 
@@ -81,13 +81,26 @@ Phase 5: Polish                [----------] 0%
 
 ---
 
-## Immediate Next Steps (after v0.2.3 test)
+## Immediate Next Steps (after v0.3.0 test)
 
-1. **Confirm DMA rings configure correctly** - RING16_BASE/CNT should show OK
-2. **Confirm Chip ID reads** - Should see actual chip ID, not 0xdeadbeef
+1. **Confirm DMA rings configure correctly** - RING16_BASE/CNT should now show OK (v0.3.0 adds prefetch config)
+2. **Confirm prefetch registers write** - TX_RING16_EXT_CTRL should show 0x05400004
 3. **Implement firmware DMA transfer** - Actually send firmware to device
 4. **Implement MCU command protocol** - Based on mt7925 mcu.c patterns
 5. **Check MT_CONN_ON_MISC for FW ready** - Currently shows 0x00000000
+
+### Key Discovery (v0.3.0)
+
+The DMA ring MISMATCH issue was caused by missing **ring prefetch configuration**. The mt76 driver calls `mt792x_dma_prefetch()` which writes to `MT_WFDMA0_TX_RING16_EXT_CTRL` (and other EXT_CTRL registers) BEFORE writing to the actual ring BASE/CNT registers.
+
+For MT7925/MT7927:
+```c
+#define PREFETCH(base, depth)  (((base) << 16) | (depth))
+// Ring 16 (FWDL): PREFETCH(0x0540, 0x4) = 0x05400004
+mt76_wr(dev, MT_WFDMA0_TX_RING16_EXT_CTRL, 0x05400004);
+```
+
+Without this step, the ring registers appear to be locked/protected.
 
 ---
 
@@ -116,10 +129,11 @@ The hardest part ahead is the MCU command protocol - it's complex and needs to m
 
 | Version | Date | Changes |
 |---------|------|---------|
-| v0.2.3 | 2025-02-03 | Fix Chip ID remap, DMASHDL remap, DMA clock gating |
-| v0.2.2 | 2025-02-03 | Reduce timeouts for faster debug feedback |
-| v0.2.1 | 2025-02-03 | Add HIF_REMAP for high address registers |
-| v0.2.0 | 2025-02-03 | Add bounds checking to prevent crashes |
+| v0.3.0 | 2026-02-03 | **KEY FIX:** Add DMA ring prefetch configuration (MT_WFDMA0_TX_RING16_EXT_CTRL). This was the missing step causing RING16_BASE/CNT writes to fail. |
+| v0.2.3 | 2026-02-03 | Fix Chip ID remap, DMASHDL remap, DMA clock gating |
+| v0.2.2 | 2026-02-03 | Reduce timeouts for faster debug feedback |
+| v0.2.1 | 2026-02-03 | Add HIF_REMAP for high address registers |
+| v0.2.0 | 2026-02-03 | Add bounds checking to prevent crashes |
 
 ---
 

@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.2.3"
+#define DRV_VERSION "0.3.0"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -115,6 +115,51 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 /* TX Ring registers */
 #define MT_TX_RING_BASE			(MT_WFDMA0_BASE + 0x300)
 #define MT_RING_SIZE			0x10
+
+/*
+ * TX Ring Extended Control Registers - CRITICAL for ring enablement!
+ * These MUST be configured BEFORE writing to RING_BASE/CNT registers.
+ * Without this, ring register writes may not stick.
+ *
+ * From mt792x_dma_prefetch() in Linux kernel mt76 driver:
+ *   MT7925 uses different offsets than other mt792x chips.
+ */
+#define MT_WFDMA0_TX_RING0_EXT_CTRL	(MT_WFDMA0_BASE + 0x600)
+#define MT_WFDMA0_TX_RING1_EXT_CTRL	(MT_WFDMA0_BASE + 0x604)
+#define MT_WFDMA0_TX_RING2_EXT_CTRL	(MT_WFDMA0_BASE + 0x608)
+#define MT_WFDMA0_TX_RING15_EXT_CTRL	(MT_WFDMA0_BASE + 0x63c)
+#define MT_WFDMA0_TX_RING16_EXT_CTRL	(MT_WFDMA0_BASE + 0x640)
+
+/* RX Ring Extended Control Registers */
+#define MT_WFDMA0_RX_RING0_EXT_CTRL	(MT_WFDMA0_BASE + 0x680)
+#define MT_WFDMA0_RX_RING1_EXT_CTRL	(MT_WFDMA0_BASE + 0x684)
+#define MT_WFDMA0_RX_RING2_EXT_CTRL	(MT_WFDMA0_BASE + 0x688)
+#define MT_WFDMA0_RX_RING3_EXT_CTRL	(MT_WFDMA0_BASE + 0x68c)
+
+/* PREFETCH macro: (base_ptr << 16) | depth */
+#define PREFETCH(base, depth)		(((base) << 16) | (depth))
+
+/*
+ * MT7925/MT7927 prefetch configuration from kernel mt792x_dma_prefetch():
+ *   TX Ring 0:  PREFETCH(0x0000, 0x4)  - Data ring
+ *   TX Ring 1:  PREFETCH(0x0040, 0x4)  - Data ring
+ *   TX Ring 2:  PREFETCH(0x0080, 0x4)  - Data ring
+ *   TX Ring 15: PREFETCH(0x0500, 0x4)  - MCU WM ring
+ *   TX Ring 16: PREFETCH(0x0540, 0x4)  - Firmware download ring
+ *   RX Ring 0:  PREFETCH(0x0100, 0x4)  - MCU events
+ *   RX Ring 1:  PREFETCH(0x0140, 0x4)  - WM events
+ *   RX Ring 2:  PREFETCH(0x0180, 0x4)  - Data ring
+ *   RX Ring 3:  PREFETCH(0x01c0, 0x4)  - Data ring
+ */
+#define MT7925_RING0_PREFETCH		PREFETCH(0x0000, 0x4)
+#define MT7925_RING1_PREFETCH		PREFETCH(0x0040, 0x4)
+#define MT7925_RING2_PREFETCH		PREFETCH(0x0080, 0x4)
+#define MT7925_RING15_PREFETCH		PREFETCH(0x0500, 0x4)
+#define MT7925_RING16_PREFETCH		PREFETCH(0x0540, 0x4)
+#define MT7925_RX_RING0_PREFETCH	PREFETCH(0x0100, 0x4)
+#define MT7925_RX_RING1_PREFETCH	PREFETCH(0x0140, 0x4)
+#define MT7925_RX_RING2_PREFETCH	PREFETCH(0x0180, 0x4)
+#define MT7925_RX_RING3_PREFETCH	PREFETCH(0x01c0, 0x4)
 
 /* Firmware status */
 #define MT_CONN_ON_MISC			0x7c0600f0
@@ -789,6 +834,60 @@ static int mt7927_dma_enable(struct mt7927_dev *dev)
 	return 0;
 }
 
+/*
+ * mt7927_dma_prefetch - Configure DMA ring prefetch registers
+ *
+ * This is CRITICAL for MT7925/MT7927! The ring extended control registers
+ * MUST be configured BEFORE writing to the actual ring BASE/CNT registers.
+ * Without this step, ring register writes will not persist.
+ *
+ * Based on mt792x_dma_prefetch() in Linux kernel mt76 driver.
+ */
+static void mt7927_dma_prefetch(struct mt7927_dev *dev)
+{
+	dev_info(&dev->pdev->dev, "=== DMA Prefetch Configuration ===\n");
+
+	/* TX Rings - from mt792x_dma_prefetch() for MT7925 */
+	dev_info(&dev->pdev->dev, "  TX Ring 0 (Data)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING0_EXT_CTRL,
+			MT7925_RING0_PREFETCH, "TX_RING0_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  TX Ring 1 (Data)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING1_EXT_CTRL,
+			MT7925_RING1_PREFETCH, "TX_RING1_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  TX Ring 2 (Data)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING2_EXT_CTRL,
+			MT7925_RING2_PREFETCH, "TX_RING2_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  TX Ring 15 (MCU WM)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING15_EXT_CTRL,
+			MT7925_RING15_PREFETCH, "TX_RING15_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  TX Ring 16 (FWDL)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING16_EXT_CTRL,
+			MT7925_RING16_PREFETCH, "TX_RING16_EXT_CTRL");
+
+	/* RX Rings */
+	dev_info(&dev->pdev->dev, "  RX Ring 0 (MCU Events)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_RX_RING0_EXT_CTRL,
+			MT7925_RX_RING0_PREFETCH, "RX_RING0_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  RX Ring 1 (WM Events)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_RX_RING1_EXT_CTRL,
+			MT7925_RX_RING1_PREFETCH, "RX_RING1_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  RX Ring 2 (Data)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_RX_RING2_EXT_CTRL,
+			MT7925_RX_RING2_PREFETCH, "RX_RING2_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  RX Ring 3 (Data)...\n");
+	mt7927_wr_debug(dev, MT_WFDMA0_RX_RING3_EXT_CTRL,
+			MT7925_RX_RING3_PREFETCH, "RX_RING3_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  DMA prefetch configuration complete\n");
+}
+
 static int mt7927_dma_init(struct mt7927_dev *dev)
 {
 	int ret;
@@ -800,6 +899,13 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	ret = mt7927_dma_disable(dev, true);
 	if (ret)
 		return ret;
+
+	/*
+	 * CRITICAL: Configure DMA prefetch registers EARLY!
+	 * This must happen BEFORE we try to write to ring BASE/CNT registers.
+	 * Without prefetch config, ring register writes will not persist.
+	 */
+	mt7927_dma_prefetch(dev);
 
 	/*
 	 * CRITICAL: Disable clock gating BEFORE configuring ring registers!
@@ -829,7 +935,11 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	dev_info(&dev->pdev->dev, "  TX ring allocated: %d descriptors at %pad\n",
 		 dev->tx_ring_size, &dev->tx_ring_dma);
 
-	/* Configure FWDL ring (ring 16) - now should work with clock gating disabled */
+	/*
+	 * Configure FWDL ring (ring 16)
+	 * NOTE: Prefetch was already configured in mt7927_dma_prefetch() above.
+	 * Now the ring BASE/CNT registers should accept writes.
+	 */
 	dev_info(&dev->pdev->dev, "  Configuring FWDL ring (ring 16)...\n");
 	mt7927_wr_debug(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE,
 			lower_32_bits(dev->tx_ring_dma), "RING16_BASE");
