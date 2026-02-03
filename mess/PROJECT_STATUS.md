@@ -131,6 +131,7 @@ The hardest part ahead is the MCU command protocol - it's complex and needs to m
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v0.8.0 | 2026-02-03 | **CRITICAL: Fix DMA descriptor control field bits!** Our MT_DMA_CTL_SD_LEN0 was GENMASK(15,0) but kernel uses GENMASK(29,16). LAST_SEC0 was BIT(16) but kernel uses BIT(30). BURST was BIT(17) but kernel uses BIT(15). This caused completely malformed descriptors - device saw garbage lengths! Also fixed: upper DMA address bits go in info field (bits [3:0]) not buf1. |
 | v0.7.0 | 2026-02-03 | **CRITICAL: Fix prefetch buffer values** - v0.6.0 still had IOMMU faults at 0x0, 0x300, 0x500. These addresses ARE the prefetch buffer bases! Our RX ring prefetch values were WRONG (0x0100 instead of 0x0000, etc). TX ring depths were also wrong (0x4 instead of 0x10). Fixed all prefetch values to match kernel mt792x_dma.c for is_mt7925(). |
 | v0.6.0 | 2026-02-03 | **Enable DMA interrupts** - v0.5.0 showed dma_idx stuck at 0 for ALL rings. Added MT_INT_TX_DONE_15/16, MT_INT_RX_DONE_0, MT_INT_MCU_CMD bits to HOST_INT_ENA. Also added MT7925-specific INT_TX_PRI/INT_RX_PRI and UWFDMA0_GLO_CFG_EXT1 config. |
 | v0.5.0 | 2026-02-03 | **Add MCU command protocol** - v0.4.3 showed IOMMU faults at internal addresses (0x0, 0x300, etc.) indicating ROM not using our ring. Added Ring 15 (MCU commands), RX Ring 0 (MCU events), PATCH_SEM_CONTROL and TARGET_ADDRESS_LEN_REQ commands before FW_SCATTER. |

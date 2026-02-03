@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.7.0"
+#define DRV_VERSION "0.8.0"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -354,10 +354,25 @@ struct mt7927_patch_sec {
 #define FW_FEATURE_NON_DL		BIT(2)
 #define FW_FEATURE_OVERRIDE_ADDR	BIT(4)
 
-#define MT_DMA_CTL_SD_LEN0		GENMASK(15, 0)
-#define MT_DMA_CTL_LAST_SEC0		BIT(16)
-#define MT_DMA_CTL_BURST		BIT(17)
-#define MT_DMA_CTL_DMA_DONE		BIT(31)
+/*
+ * DMA Descriptor Control Field (ctrl) - v0.8.0 CRITICAL FIX!
+ *
+ * Our previous definitions were WRONG and caused completely malformed descriptors:
+ *   OLD (WRONG): SD_LEN0 = bits [15:0], LAST_SEC0 = bit 16, BURST = bit 17
+ *   NEW (CORRECT): SD_LEN0 = bits [29:16], LAST_SEC0 = bit 30, BURST = bit 15
+ *
+ * This explains why DMA never worked - the device saw garbage lengths/flags!
+ */
+#define MT_DMA_CTL_SD_LEN1		GENMASK(13, 0)	/* Segment 1 length (scatter-gather) */
+#define MT_DMA_CTL_LAST_SEC1		BIT(14)		/* Last section segment 1 */
+#define MT_DMA_CTL_BURST		BIT(15)		/* Burst mode */
+#define MT_DMA_CTL_SD_LEN0		GENMASK(29, 16)	/* Segment 0 length (PRIMARY) */
+#define MT_DMA_CTL_LAST_SEC0		BIT(30)		/* Last section segment 0 */
+#define MT_DMA_CTL_DMA_DONE		BIT(31)		/* DMA completion flag */
+
+/* DMA Info Field (info) - for 64-bit address support */
+#define MT_DMA_CTL_SDP0_H		GENMASK(3, 0)	/* Upper 4 bits of buf0 address */
+#define MT_DMA_CTL_SDP1_H		GENMASK(19, 16)	/* Upper 4 bits of buf1 address */
 
 /* =============================================================================
  * MCU Command Definitions
@@ -1409,17 +1424,19 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 		goto err_free_rx_ring;
 	}
 
-	/* Initialize RX descriptors with buffer addresses */
+	/* Initialize RX descriptors with buffer addresses (v0.8.0 FIXED) */
 	{
 		int i;
 		for (i = 0; i < dev->rx_ring_size; i++) {
 			dma_addr_t buf_dma = dev->rx_buf_dma + i * MT7927_RX_BUF_SIZE;
 			dev->rx_ring[i].buf0 = cpu_to_le32(lower_32_bits(buf_dma));
-			dev->rx_ring[i].buf1 = cpu_to_le32(upper_32_bits(buf_dma));
-			/* Control: buffer length, no DMA_DONE yet */
+			dev->rx_ring[i].buf1 = 0;  /* Not using scatter-gather */
+			/* Control: buffer length in bits [29:16] */
 			dev->rx_ring[i].ctrl = cpu_to_le32(
 				FIELD_PREP(MT_DMA_CTL_SD_LEN0, MT7927_RX_BUF_SIZE));
-			dev->rx_ring[i].info = 0;
+			/* Info: upper 4 bits of address in bits [3:0] */
+			dev->rx_ring[i].info = cpu_to_le32(
+				FIELD_PREP(MT_DMA_CTL_SDP0_H, upper_32_bits(buf_dma) & 0xF));
 		}
 	}
 
@@ -1565,12 +1582,16 @@ static int mt7927_dma_tx_queue_mcu(struct mt7927_dev *dev, dma_addr_t data_dma,
 	idx = dev->mcu_ring_head;
 	desc = &dev->mcu_ring[idx];
 
-	/* Fill descriptor */
+	/*
+	 * Fill descriptor (v0.8.0 FIXED):
+	 * Using correct bit positions for ctrl field.
+	 */
 	desc->buf0 = cpu_to_le32(lower_32_bits(data_dma));
-	desc->buf1 = cpu_to_le32(upper_32_bits(data_dma));
-	desc->info = 0;
+	desc->buf1 = 0;  /* Not using scatter-gather */
+	desc->info = cpu_to_le32(
+		FIELD_PREP(MT_DMA_CTL_SDP0_H, upper_32_bits(data_dma) & 0xF));
 
-	/* Control: length + last segment */
+	/* Control: length in [29:16], last segment at bit 30 */
 	ctrl = FIELD_PREP(MT_DMA_CTL_SD_LEN0, data_len) |
 	       MT_DMA_CTL_LAST_SEC0;
 	desc->ctrl = cpu_to_le32(ctrl);
@@ -1822,20 +1843,28 @@ static int mt7927_dma_tx_queue_fw(struct mt7927_dev *dev, dma_addr_t data_dma,
 	}
 
 	/*
-	 * Fill descriptor - MT76 descriptor format:
+	 * Fill descriptor - MT76 descriptor format (v0.8.0 CRITICAL FIX):
 	 *   buf0: lower 32 bits of DMA address
-	 *   ctrl: control flags (length, last segment, etc)
-	 *   buf1: upper 32 bits of DMA address (for 64-bit)
-	 *   info: additional metadata (token, etc)
+	 *   ctrl: control flags - SD_LEN0 in bits [29:16], LAST_SEC0 at bit 30
+	 *   buf1: lower 32 bits of second buffer (for scatter-gather, usually 0)
+	 *   info: metadata - includes upper 4 bits of DMA address in bits [3:0]
 	 *
-	 * v0.4.3: Set info to 0 and ensure ctrl has correct format.
-	 * The kernel driver also sets BURST bit for firmware downloads.
+	 * CRITICAL: Our old code had SD_LEN0 in wrong bits causing garbage!
+	 * Now using kernel-correct bit positions.
 	 */
 	desc->buf0 = cpu_to_le32(lower_32_bits(data_dma));
-	desc->buf1 = cpu_to_le32(upper_32_bits(data_dma));
-	desc->info = 0;
+	desc->buf1 = 0;  /* Not using scatter-gather second buffer */
 
-	/* Control: length + last segment + burst mode */
+	/* Info field: upper 4 bits of 64-bit address go in bits [3:0] */
+	desc->info = cpu_to_le32(
+		FIELD_PREP(MT_DMA_CTL_SDP0_H, upper_32_bits(data_dma) & 0xF));
+
+	/*
+	 * Control field (v0.8.0 FIXED bit positions):
+	 *   - SD_LEN0 in bits [29:16] = packet length
+	 *   - LAST_SEC0 at bit 30 = this is the last/only segment
+	 *   - BURST at bit 15 = burst mode for better performance
+	 */
 	ctrl = FIELD_PREP(MT_DMA_CTL_SD_LEN0, data_len) |
 	       MT_DMA_CTL_LAST_SEC0 |
 	       MT_DMA_CTL_BURST;
