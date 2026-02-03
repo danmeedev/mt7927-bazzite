@@ -1,0 +1,350 @@
+==========================================
+MT7927 Test Installation
+==========================================
+
+WARNING: This creates a temporary overlay that will NOT persist after reboot!
+
+[1/6] Checking for MT7927 device...
+Found MT7927 device:
+06:00.0 Network controller [0280]: MEDIATEK Corp. MT7927 802.11be 320MHz 2x2 PCIe Wireless Network Adapter [Filogic 380] [14c3:7927]
+
+[2/6] Checking driver source...
+  Found: /var/home/xan517/driver/mt7927-bazzite/packaging/driver/mt7927.c
+
+[3/6] Checking build dependencies...
+  Build tools available
+
+[4/6] Creating temporary overlay for firmware...
+Development mode enabled.  A writable overlayfs is now mounted on /usr.
+All changes there will be discarded on reboot.
+
+[5/6] Downloading and installing firmware...
+  Downloading WIFI_MT7925_PATCH_MCU_1_1_hdr.bin...
+  Downloading WIFI_RAM_CODE_MT7925_1_1.bin...
+  Firmware installed to /usr/lib/firmware/mediatek/mt7925
+total 3176
+drwxr-xr-x. 1 root root     122 Feb  3 13:04 .
+drwxr-xr-x. 1 root root      12 Dec 31  1969 ..
+-rw-r--r--. 3 root root  459588 Dec 31  1969 BT_RAM_CODE_MT7925_1_1_hdr.bin.xz
+-rw-r--r--. 1 root root  197792 Feb  3 13:04 WIFI_MT7925_PATCH_MCU_1_1_hdr.bin
+-rw-r--r--. 3 root root  197868 Dec 31  1969 WIFI_MT7925_PATCH_MCU_1_1_hdr.bin.xz
+-rw-r--r--. 1 root root 1246968 Feb  3 13:04 WIFI_RAM_CODE_MT7925_1_1.bin
+-rw-r--r--. 3 root root 1127480 Dec 31  1969 WIFI_RAM_CODE_MT7925_1_1.bin.xz
+
+[6/6] Building and loading driver...
+  Copying source to /tmp/mt7927-build-9798 (avoids path issues)...
+  Cleaning previous build...
+make -C /lib/modules/6.17.7-ba25.fc43.x86_64/build M=/tmp/mt7927-build-9798 clean
+make[1]: Entering directory '/usr/src/kernels/6.17.7-ba25.fc43.x86_64'
+make[2]: Entering directory '/tmp/mt7927-build-9798'
+make[2]: Leaving directory '/tmp/mt7927-build-9798'
+make[1]: Leaving directory '/usr/src/kernels/6.17.7-ba25.fc43.x86_64'
+  Building driver...
+make -C /lib/modules/6.17.7-ba25.fc43.x86_64/build M=/tmp/mt7927-build-9798 modules
+make[1]: Entering directory '/usr/src/kernels/6.17.7-ba25.fc43.x86_64'
+make[2]: Entering directory '/tmp/mt7927-build-9798'
+  CC [M]  mt7927.o
+  MODPOST Module.symvers
+  CC [M]  mt7927.mod.o
+  CC [M]  .module-common.o
+  LD [M]  mt7927.ko
+  BTF [M] mt7927.ko
+Skipping BTF generation for mt7927.ko due to unavailability of vmlinux
+make[2]: Leaving directory '/tmp/mt7927-build-9798'
+make[1]: Leaving directory '/usr/src/kernels/6.17.7-ba25.fc43.x86_64'
+
+Removing conflicting drivers...
+
+Loading MT7927 driver (debug mode)...
+
+Driver loaded! Checking status...
+
+==========================================
+DMESG OUTPUT (last 50 lines with mt7927):
+==========================================
+[  494.377104] mt7927 0000:06:00.0:   Disabling DMASHDL...
+[  494.377112] mt7927 0000:06:00.0:   WRITE [0x000d42b0] GLO_CFG_EXT0: 0x28c004df -> write 0x28c004df -> read 0x28c004df OK
+[  494.377114] mt7927 0000:06:00.0:   Setting DMASHDL bypass via remap...
+[  494.377121] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000000 (window: base=0x7c020000, off=0x6004)
+[  494.377127] mt7927 0000:06:00.0:   REMAP WRITE [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
+[  494.377134] mt7927 0000:06:00.0:   REMAP READ [0x7c026004] = 0x00000001 (window: base=0x7c020000, off=0x6004)
+[  494.377136] mt7927 0000:06:00.0:   DMASHDL_SW_CONTROL: 0x00000000 -> 0x00000001
+[  494.377138] mt7927 0000:06:00.0:   Force reset sequence...
+[  494.377149] mt7927 0000:06:00.0:   WFDMA0_RST: 0x00000000
+[  494.377151] mt7927 0000:06:00.0:   Disabling clock gating before ring config...
+[  494.377155] mt7927 0000:06:00.0:   GLO_CFG before CLK_GAT_DIS: 0x0010a870
+[  494.377161] mt7927 0000:06:00.0:   GLO_CFG after CLK_GAT_DIS:  0x4010a870
+[  494.377171] mt7927 0000:06:00.0:   TX ring allocated: 128 descriptors at 0x00000000fffff000
+[  494.377174] mt7927 0000:06:00.0:   Configuring FWDL ring (ring 16)...
+[  494.377180] mt7927 0000:06:00.0:   WRITE [0x000d4400] RING16_BASE: 0x00000000 -> write 0xfffff000 -> read 0x00000000 MISMATCH!
+[  494.377187] mt7927 0000:06:00.0:   WRITE [0x000d4404] RING16_CNT: 0x00000200 -> write 0x00000080 -> read 0x00000200 MISMATCH!
+[  494.377194] mt7927 0000:06:00.0:   WRITE [0x000d4408] RING16_CIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  494.377201] mt7927 0000:06:00.0:   WRITE [0x000d440c] RING16_DIDX: 0x00000000 -> write 0x00000000 -> read 0x00000000 OK
+[  494.377204] mt7927 0000:06:00.0: === DMA Enable ===
+[  494.377205] mt7927 0000:06:00.0:   Resetting DMA pointers...
+[  494.377210] mt7927 0000:06:00.0:   GLO_CFG before enable: 0x4010a870
+[  494.377212] mt7927 0000:06:00.0:   Setting config flags: 0x50209070
+[  494.377218] mt7927 0000:06:00.0:   GLO_CFG after config: 0x5030b870
+[  494.377220] mt7927 0000:06:00.0:   Enabling TX/RX DMA...
+[  494.377226] mt7927 0000:06:00.0:   GLO_CFG final: 0x5030b875
+[  494.377228] mt7927 0000:06:00.0:
+[  494.377232] mt7927 0000:06:00.0:   WPDMA_GLO_CFG final: 0x5030b875
+[  494.377234] mt7927 0000:06:00.0:   GLO_CFG has value - registers may be writable
+[  494.377236] mt7927 0000:06:00.0: === Critical Register Dump ===
+[  494.377237] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
+[  494.377242] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x000000ff
+[  494.377247] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
+[  494.377251] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x5030b875
+[  494.377255] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000000
+[  494.377259] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
+[  494.377264] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0xffffffff
+[  494.377268] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
+[  494.377272] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
+[  494.377274] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
+[  494.377276] mt7927 0000:06:00.0:
+[  494.377278] mt7927 0000:06:00.0: === Firmware Loading ===
+[  494.380554] mt7927 0000:06:00.0:   Patch firmware loaded: 197792 bytes
+[  494.380584] mt7927 0000:06:00.0:   Firmware DMA buffer at 0x00000000fffc0000
+[  494.380592] mt7927 0000:06:00.0:   REMAP READ [0x7c0600f0] = 0x00000000 (window: base=0x7c060000, off=0xf0)
+[  494.380595] mt7927 0000:06:00.0:   MT_CONN_ON_MISC: 0x00000000
+[  494.380597] mt7927 0000:06:00.0:
+[  494.380599] mt7927 0000:06:00.0: # MT7927 Driver Initialization Complete
+[  494.380601] mt7927 0000:06:00.0: # Status: Device bound, debugging enabled
+[  494.380602] mt7927 0000:06:00.0: # Next: Check dmesg for register values
+[  494.380604] mt7927 0000:06:00.0: ############################################
+
+==========================================
+Installation complete (TEMPORARY)
+==========================================
+
+To check full driver status:
+  sudo dmesg | grep mt7927
+
+To see register dumps:
+  sudo dmesg | grep -E 'mt7927.*0x'
+
+To unload driver:
+  sudo rmmod mt7927
+
+Changes will be LOST after reboot.
+
+
+
+xan517@bazzite:~/driver/mt7927-bazzite/packaging$ sudo lspci -vvv -s $(lspci | grep -i 7927 | cut -d' ' -f1)
+06:00.0 Network controller: MEDIATEK Corp. MT7927 802.11be 320MHz 2x2 PCIe Wireless Network Adapter [Filogic 380]
+        Subsystem: Foxconn International, Inc. Device e104
+        Control: I/O- Mem+ BusMaster+ SpecCycle- MemWINV- VGASnoop- ParErr- Stepping- SERR- FastB2B- DisINTx-
+        Status: Cap+ 66MHz- UDF- FastB2B- ParErr- DEVSEL=fast >TAbort- <TAbort- <MAbort- >SERR- <PERR- INTx-
+        Latency: 0, Cache Line Size: 64 bytes
+        Interrupt: pin A routed to IRQ 24
+        IOMMU group: 26
+        Region 0: Memory at fb200000 (64-bit, non-prefetchable) [size=2M]
+        Region 2: Memory at fb400000 (64-bit, non-prefetchable) [size=32K]
+        Capabilities: [80] Express (v2) Endpoint, IntMsgNum 0
+                DevCap: MaxPayload 256 bytes, PhantFunc 0, Latency L0s unlimited, L1 unlimited
+                        ExtTag+ AttnBtn- AttnInd- PwrInd- RBE+ FLReset+ SlotPowerLimit 0W TEE-IO-
+                DevCtl: CorrErr+ NonFatalErr+ FatalErr+ UnsupReq+
+                        RlxdOrd+ ExtTag+ PhantFunc- AuxPwr- NoSnoop+ FLReset-
+                        MaxPayload 256 bytes, MaxReadReq 512 bytes
+                DevSta: CorrErr- NonFatalErr- FatalErr- UnsupReq- AuxPwr- TransPend-
+                LnkCap: Port #1, Speed 8GT/s, Width x1, ASPM L0s L1, Exit Latency L0s <2us, L1 <8us
+                        ClockPM- Surprise- LLActRep- BwNot- ASPMOptComp+
+                LnkCtl: ASPM Disabled; RCB 64 bytes, LnkDisable- CommClk+
+                        ExtSynch- ClockPM- AutWidDis- BWInt- AutBWInt- FltModeDis-
+                LnkSta: Speed 8GT/s, Width x1
+                        TrErr- Train- SlotClk+ DLActive- BWMgmt- ABWMgmt-
+                DevCap2: Completion Timeout: Range ABCD, TimeoutDis+ NROPrPrP- LTR+
+                         10BitTagComp+ 10BitTagReq- OBFF Not Supported, ExtFmt+ EETLPPrefix-
+                         EmergencyPowerReduction Not Supported, EmergencyPowerReductionInit-
+                         FRS- TPHComp- ExtTPHComp-
+                         AtomicOpsCap: 32bit- 64bit- 128bitCAS-
+                DevCtl2: Completion Timeout: 50us to 50ms, TimeoutDis-
+                         AtomicOpsCtl: ReqEn-
+                         IDOReq- IDOCompl- LTR+ EmergencyPowerReductionReq-
+                         10BitTagReq- OBFF Disabled, EETLPPrefixBlk-
+                LnkCap2: Supported Link Speeds: 2.5-8GT/s, Crosslink- Retimer+ 2Retimers+ DRS-
+                LnkCtl2: Target Link Speed: 8GT/s, EnterCompliance- SpeedDis-
+                         Transmit Margin: Normal Operating Range, EnterModifiedCompliance- ComplianceSOS-
+                         Compliance Preset/De-emphasis: -6dB de-emphasis, 0dB preshoot
+                LnkSta2: Current De-emphasis Level: -3.5dB, EqualizationComplete+ EqualizationPhase1+
+                         EqualizationPhase2+ EqualizationPhase3+ LinkEqualizationRequest-
+                         Retimer- 2Retimers- CrosslinkRes: unsupported, FltMode-
+        Capabilities: [e0] MSI: Enable- Count=1/32 Maskable+ 64bit+
+                Address: 0000000000000000  Data: 0000
+                Masking: 00000000  Pending: 00000000
+        Capabilities: [f8] Power Management version 3
+                Flags: PMEClk- DSI- D1- D2- AuxCurrent=0mA PME(D0+,D1-,D2-,D3hot+,D3cold+)
+                Status: D0 NoSoftRst+ PME-Enable- DSel=0 DScale=0 PME-
+        Capabilities: [100 v1] Vendor Specific Information: ID=1556 Rev=1 Len=008 <?>
+        Capabilities: [108 v1] Latency Tolerance Reporting
+                Max snoop latency: 1048576ns
+                Max no snoop latency: 1048576ns
+        Capabilities: [110 v1] L1 PM Substates
+                L1SubCap: PCI-PM_L1.2+ PCI-PM_L1.1+ ASPM_L1.2+ ASPM_L1.1+ L1_PM_Substates+
+                          PortCommonModeRestoreTime=3us PortTPowerOnTime=28us
+                L1SubCtl1: PCI-PM_L1.2- PCI-PM_L1.1- ASPM_L1.2- ASPM_L1.1-
+                           T_CommonMode=0us LTR1.2_Threshold=32768ns
+                L1SubCtl2: T_PwrOn=28us
+        Capabilities: [200 v2] Advanced Error Reporting
+                UESta:  DLP- SDES- TLP- FCP- CmpltTO- CmpltAbrt- UnxCmplt- RxOF- MalfTLP-
+                        ECRC- UnsupReq- ACSViol- UncorrIntErr- BlockedTLP- AtomicOpBlocked- TLPBlockedErr-
+                        PoisonTLPBlocked- DMWrReqBlocked- IDECheck- MisIDETLP- PCRC_CHECK- TLPXlatBlocked-
+                UEMsk:  DLP- SDES- TLP- FCP- CmpltTO- CmpltAbrt- UnxCmplt- RxOF- MalfTLP-
+                        ECRC- UnsupReq- ACSViol- UncorrIntErr+ BlockedTLP- AtomicOpBlocked- TLPBlockedErr-
+                        PoisonTLPBlocked- DMWrReqBlocked- IDECheck- MisIDETLP- PCRC_CHECK- TLPXlatBlocked-
+                UESvrt: DLP+ SDES+ TLP- FCP+ CmpltTO- CmpltAbrt- UnxCmplt- RxOF+ MalfTLP+
+                        ECRC- UnsupReq- ACSViol- UncorrIntErr+ BlockedTLP- AtomicOpBlocked- TLPBlockedErr-
+                        PoisonTLPBlocked- DMWrReqBlocked- IDECheck- MisIDETLP- PCRC_CHECK- TLPXlatBlocked-
+                CESta:  RxErr- BadTLP- BadDLLP- Rollover- Timeout- AdvNonFatalErr- CorrIntErr- HeaderOF-
+                CEMsk:  RxErr- BadTLP- BadDLLP- Rollover- Timeout- AdvNonFatalErr+ CorrIntErr+ HeaderOF-
+                AERCap: First Error Pointer: 00, ECRCGenCap- ECRCGenEn- ECRCChkCap- ECRCChkEn-
+                        MultHdrRecCap- MultHdrRecEn- TLPPfxPres- HdrLogCap-
+                HeaderLog: 00000000 00000000 00000000 00000000
+        Capabilities: [300 v1] Secondary PCI Express
+                LnkCtl3: LnkEquIntrruptEn- PerformEqu-
+                LaneErrStat: 0
+        Kernel driver in use: mt7927
+
+
+        xan517@bazzite:~/driver/mt7927-bazzite/packaging$ sudo lspci -xxx -s $(lspci | grep -i 7927 | cut -d' ' -f1)
+06:00.0 Network controller: MEDIATEK Corp. MT7927 802.11be 320MHz 2x2 PCIe Wireless Network Adapter [Filogic 380]
+00: c3 14 27 79 06 00 10 00 00 00 80 02 10 00 00 00
+10: 04 00 20 fb 00 00 00 00 04 00 40 fb 00 00 00 00
+20: 00 00 00 00 00 00 00 00 00 00 00 00 5b 10 04 e1
+30: 00 00 00 00 80 00 00 00 00 00 00 00 ff 01 00 00
+40: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+50: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+60: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+70: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+80: 10 e0 02 00 e1 8f 00 10 3f 29 00 00 13 dc 41 01
+90: 40 00 13 10 00 00 00 00 00 00 00 00 00 00 00 00
+a0: 00 00 00 00 1f 08 11 00 00 04 00 00 0e 00 80 01
+b0: 03 00 1f 00 00 00 00 00 00 00 00 00 00 00 00 00
+c0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+d0: 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+e0: 05 f8 8a 01 00 00 00 00 00 00 00 00 00 00 00 00
+f0: 00 00 00 00 00 00 00 00 01 00 03 c8 08 00 00 00
+
+
+xan517@bazzite:~/driver/mt7927-bazzite/packaging$ cat /sys/bus/pci/devices/*/power/runtime_status 2>/dev/null | head -5
+active
+active
+active
+active
+active
+
+xan517@bazzite:~/driver/mt7927-bazzite/packaging$ modinfo mt7925 2>/dev/null || echo "mt7925 module not available"
+mt7925 module not available
+
+xan517@bazzite:~/driver/mt7927-bazzite/packaging$ modinfo mt7925e 2>/dev/null || echo "mt7925e module not available"
+filename:       /lib/modules/6.17.7-ba25.fc43.x86_64/kernel/drivers/net/wireless/mediatek/mt76/mt7925/mt7925e.ko.xz
+license:        Dual BSD/GPL
+description:    MediaTek MT7925E (PCIe) wireless driver
+author:         Lorenzo Bianconi <lorenzo@kernel.org>
+author:         Deren Wu <deren.wu@mediatek.com>
+firmware:       mediatek/mt7925/WIFI_MT7925_PATCH_MCU_1_1_hdr.bin
+firmware:       mediatek/mt7925/WIFI_RAM_CODE_MT7925_1_1.bin
+rhelversion:    10.99
+alias:          pci:v000014C3d00000717sv*sd*bc*sc*i*
+alias:          pci:v000014C3d00007925sv*sd*bc*sc*i*
+depends:        mt7925-common,mt792x-lib,mt76-connac-lib,mt76,rfkill
+intree:         Y
+name:           mt7925e
+retpoline:      Y
+vermagic:       6.17.7-ba25.fc43.x86_64 SMP preempt mod_unload
+sig_id:         PKCS#7
+signer:         Fedora kernel signing key
+sig_key:        69:12:F7:A5:34:EA:24:F8:AB:5F:DF:AD:06:70:A0:37:BF:21:ED:97
+sig_hashalgo:   sha256
+signature:      9E:A5:E9:17:AD:10:87:00:96:48:F2:BE:E7:26:20:E9:41:3F:61:41:
+                64:39:79:3F:AA:CB:4F:C8:08:36:7D:DC:2A:A9:AC:B4:9D:C0:C6:D6:
+                4A:5D:A4:4C:2C:99:E0:25:B9:47:8D:14:71:B9:0A:9A:E2:C5:81:87:
+                35:D7:3E:C3:6C:F5:4A:29:5F:22:10:D6:8E:54:17:55:52:30:9B:25:
+                6A:2C:84:16:15:08:0F:C1:66:1D:D7:D2:CB:FD:47:70:2E:3C:B8:DC:
+                A4:F4:15:0F:C0:26:9A:DF:B6:6A:AF:9A:12:00:91:A2:E3:73:A6:25:
+                5B:49:C8:1B:F9:BE:56:21:30:BC:73:9A:05:12:CC:03:7A:93:97:AC:
+                65:E8:BF:D7:E5:6C:22:9C:56:76:07:03:AF:A4:B2:BC:3A:D9:06:57:
+                83:70:A5:01:95:41:8E:71:8C:39:60:64:F5:6E:B3:FD:01:69:64:66:
+                F0:95:87:81:31:2D:DE:FE:C4:15:8A:33:28:63:73:85:4F:C9:B9:62:
+                51:DF:BF:A2:2C:22:53:53:72:0C:5F:90:0D:EE:79:B3:C3:89:B2:A9:
+                E1:F0:0B:9D:04:D6:BC:5E:C3:B0:75:76:61:F5:D4:5F:A2:C1:AE:01:
+                7B:06:73:C8:A3:80:DA:C5:21:18:53:30:A1:A5:BA:60:C0:89:D9:1D:
+                61:FE:F8:5C:83:D6:9B:5C:F7:AC:32:8D:A8:CB:93:9D:BF:43:2A:D3:
+                C6:17:F9:6C:87:51:DB:85:1C:82:8F:FE:0B:DD:E5:5E:2F:56:37:DE:
+                10:A4:79:C6:DA:95:06:7E:AF:A1:96:3B:3F:BD:CD:83:72:71:96:B1:
+                65:81:98:B4:44:1E:A8:97:E8:A3:F9:13:2E:E0:D3:6A:A6:0B:10:CB:
+                EF:60:F0:C4:46:FC:35:29:CA:AE:53:59:12:46:C8:B9:37:07:4C:C7:
+                8D:62:7F:68:BA:C9:34:C1:35:DC:7A:E5:38:CD:E9:67:DF:D9:4F:56:
+                F4:FE:0C:FE:78:92:94:45:52:31:65:60:45:E0:8B:61:79:B2:F8:6D:
+                8D:20:4D:A8:E8:92:9E:34:2E:C1:F8:57:BF:B5:77:18:D8:76:69:0C:
+                22:07:DF:B6:FD:37:9D:2A:5C:A6:CF:D1:FB:46:4C:D2:A1:57:B8:CE:
+                22:67:4F:81:A6:A9:45:61:3D:6A:1C:12:E8:4B:90:08:38:D1:7E:D9:
+                2D:F4:34:8B:17:C0:7F:0E:16:E9:1E:0C:F1:44:39:D0:D3:01:B2:91:
+                5F:50:4B:EC:D8:DB:3C:2E:06:4A:33:11:55:38:FB:83:8E:34:2D:81:
+                8B:E9:4F:09:C8:F1:93:F5:BA:86:2A:E5
+parm:           disable_aspm:disable PCI ASPM support (bool)
+
+xan517@bazzite:~/driver/mt7927-bazzite/packaging$ ls -la /lib/firmware/mediatek/mt7925/ 2>/dev/null || echo "No mt7925 firmware dir"
+total 3176
+drwxr-xr-x. 1 root root     122 Feb  3 13:04 .
+drwxr-xr-x. 1 root root      12 Dec 31  1969 ..
+-rw-r--r--. 3 root root  459588 Dec 31  1969 BT_RAM_CODE_MT7925_1_1_hdr.bin.xz
+-rw-r--r--. 1 root root  197792 Feb  3 13:05 WIFI_MT7925_PATCH_MCU_1_1_hdr.bin
+-rw-r--r--. 3 root root  197868 Dec 31  1969 WIFI_MT7925_PATCH_MCU_1_1_hdr.bin.xz
+-rw-r--r--. 1 root root 1246968 Feb  3 13:05 WIFI_RAM_CODE_MT7925_1_1.bin
+-rw-r--r--. 3 root root 1127480 Dec 31  1969 WIFI_RAM_CODE_MT7925_1_1.bin.xz
+
+xan517@bazzite:~/driver/mt7927-bazzite/packaging$ ls -la /lib/firmware/mediatek/mt7927/ 2>/dev/null || echo "No mt7927 firmware dir"
+No mt7927 firmware dir
+
+xan517@bazzite:~/driver/mt7927-bazzite/packaging$ sudo dmesg | grep -iE "7927|7925|mediatek|mt76" | head -50
+[    0.778687] pci 0000:06:00.0: [14c3:7927] type 00 class 0x028000 PCIe Endpoint
+[    1.757709] usb 3-6: Manufacturer: MediaTek Inc.
+[  494.205701] mt7927: module verification failed: signature and/or required key missing - tainting kernel
+[  494.206201] mt7927 0000:06:00.0:
+[  494.206204] mt7927 0000:06:00.0: ############################################
+[  494.206206] mt7927 0000:06:00.0: # MT7927 WiFi 7 Driver v0.2.3
+[  494.206209] mt7927 0000:06:00.0: # Device: 14c3:7927 (AMD RZ738 compatible)
+[  494.206211] mt7927 0000:06:00.0: ############################################
+[  494.206213] mt7927 0000:06:00.0:
+[  494.206221] mt7927 0000:06:00.0: enabling device (0000 -> 0002)
+[  494.206321] mt7927 0000:06:00.0:   BAR0 mapped: [mem 0xfb200000-0xfb3fffff 64bit] (size: 0x200000)
+[  494.206325] mt7927 0000:06:00.0: === PCI State Dump ===
+[  494.206334] mt7927 0000:06:00.0:   PCI Command: 0x0006 (MEM=1, MASTER=1)
+[  494.206336] mt7927 0000:06:00.0:   PCI Status:  0x0010
+[  494.206338] mt7927 0000:06:00.0:   BAR0: 0xfb200004 (len=2048 KB), BAR2: 0xfb400004
+[  494.206341] mt7927 0000:06:00.0:   Subsystem: 105b:e104
+[  494.206343] mt7927 0000:06:00.0:   MMIO range: 0x00000000 - 0x001fffff
+[  494.206345] mt7927 0000:06:00.0:   WARNING: BAR0 too small for high registers!
+[  494.206347] mt7927 0000:06:00.0:   Registers like 0x7c060010 are OUT OF RANGE
+[  494.206349] mt7927 0000:06:00.0:
+[  494.206350] mt7927 0000:06:00.0: === Critical Register Dump ===
+[  494.206352] mt7927 0000:06:00.0:   (BAR0 size: 0x200000, skipping out-of-range)
+[  494.206357] mt7927 0000:06:00.0:   READ  [0x00010188] MT_PCIE_MAC_INT_ENABLE = 0x00000000
+[  494.206362] mt7927 0000:06:00.0:   READ  [0x00010184] MT_PCIE_MAC_INT_STATUS = 0x88000000
+[  494.206366] mt7927 0000:06:00.0:   READ  [0x000d4208] MT_WFDMA0_GLO_CFG = 0x1010b870
+[  494.206370] mt7927 0000:06:00.0:   READ  [0x000d4100] MT_WFDMA0_RST = 0x00000030
+[  494.206375] mt7927 0000:06:00.0:   READ  [0x000d42b0] MT_WFDMA0_GLO_CFG_EXT0 = 0x28c004df
+[  494.206379] mt7927 0000:06:00.0:   READ  [0x000d4204] MT_WFDMA0_HOST_INT_ENA = 0x00000000
+[  494.206383] mt7927 0000:06:00.0:   READ  [0x000d4200] MT_WFDMA0_HOST_INT_STA = 0x00000000
+[  494.206387] mt7927 0000:06:00.0:   READ  [0x00155024] MT_HIF_REMAP_L1 = 0x00000000
+[  494.206390] mt7927 0000:06:00.0:   High registers (0x7c0xxxxx) need remapping
+[  494.206391] mt7927 0000:06:00.0:
+[  494.206393] mt7927 0000:06:00.0: === FW Power Control (give to firmware) ===
+[  494.206395] mt7927 0000:06:00.0:   Using remapped register access for 0x7c0xxxxx
+[  494.206401] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  494.206404] mt7927 0000:06:00.0:   [1] Writing SET_OWN to 0x7c060010...
+[  494.206409] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  494.226079] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  494.226084] mt7927 0000:06:00.0:   [1] Timeout at addr 0x7c060010
+[  494.226092] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  494.226095] mt7927 0000:06:00.0:   [2] Writing SET_OWN to 0x7c060010...
+[  494.226100] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  494.246197] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  494.246201] mt7927 0000:06:00.0:   [2] Timeout at addr 0x7c060010
+[  494.246208] mt7927 0000:06:00.0:   REMAP READ [0x7c060010] = 0x000001d2 (window: base=0x7c060000, off=0x10)
+[  494.246210] mt7927 0000:06:00.0:   [3] Writing SET_OWN to 0x7c060010...
+[  494.246215] mt7927 0000:06:00.0:   REMAP WRITE [0x7c060010] = 0x00000001 (window: base=0x7c060000, off=0x10)
+[  494.266313] mt7927 0000:06:00.0:   POLL TIMEOUT [0x7c060010] mask=0x00000004 expected=0x00000004 got=0x000001d2 after 10ms
+[  494.266317] mt7927 0000:06:00.0:   [3] Timeout at addr 0x7c060010
+[  494.266319] mt7927 0000:06:00.0:   Trying alternative LPCTL address 0x18060010...
