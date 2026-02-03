@@ -146,6 +146,15 @@ debian/stamp-*
 /private_notes.md
 /TODO.private
 
+# Packaging build output
+packaging/build/
+packaging/output/
+packaging/firmware/firmware/
+
+# RPM build
+*.rpm
+rpmbuild/
+
 # Keep important configuration files
 !.gitignore
 !.gitattributes
