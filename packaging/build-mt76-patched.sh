@@ -35,14 +35,28 @@ fi
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-echo "[1/6] Cloning Linux kernel (sparse checkout for mt76 only)..."
-# Use a stable tag that matches closer to the running kernel
-# v6.12 is a good stable base that doesn't have bleeding-edge dependencies
-git clone --depth=1 --branch v6.12 --filter=blob:none --sparse https://github.com/torvalds/linux.git
-cd linux
-git sparse-checkout set drivers/net/wireless/mediatek/mt76
+echo "[1/6] Extracting mt76 from running kernel's source..."
+# The cleanest approach: copy the mt76 driver from our own kernel's module source
+# and just patch the PCI ID. This avoids version mismatches.
 
-cd drivers/net/wireless/mediatek/mt76
+# Check if kernel source is available in the build directory
+KERNEL_SRC="/usr/src/kernels/$KERNEL_VER"
+if [ -d "$KERNEL_SRC/drivers/net/wireless/mediatek/mt76" ]; then
+    echo "Found mt76 source in kernel headers, copying..."
+    cp -r "$KERNEL_SRC/drivers/net/wireless/mediatek/mt76" .
+    cd mt76
+else
+    # Fall back to cloning, but use the exact kernel version tag
+    echo "Kernel source not found, cloning from git..."
+    # Extract major.minor from kernel version (e.g., 6.17 from 6.17.7-ba25.fc43.x86_64)
+    KERNEL_MAJOR_MINOR=$(echo "$KERNEL_VER" | grep -oP '^\d+\.\d+')
+    echo "Trying to find tag for kernel $KERNEL_MAJOR_MINOR..."
+
+    git clone --depth=1 --filter=blob:none --sparse https://github.com/torvalds/linux.git
+    cd linux
+    git sparse-checkout set drivers/net/wireless/mediatek/mt76
+    cd drivers/net/wireless/mediatek/mt76
+fi
 
 # Create stub header for airoha_offload.h if the include exists but header is missing
 if grep -q "airoha_offload.h" mt76.h 2>/dev/null; then
