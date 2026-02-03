@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.4.1"
+#define DRV_VERSION "0.4.2"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -1113,6 +1113,16 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	dev_info(&dev->pdev->dev, "  GLO_CFG after CLK_GAT_DIS: 0x%08x\n", val);
 
 	/*
+	 * v0.4.2: The kernel driver sets additional config flags BEFORE prefetch.
+	 * Specifically CSR_DISP_BASE_PTR_CHAIN_EN which enables ring chaining.
+	 * This might be required for ring registers to be writable.
+	 */
+	dev_info(&dev->pdev->dev, "  Setting CSR_DISP_BASE_PTR_CHAIN_EN before prefetch...\n");
+	mt7927_set(dev, MT_WFDMA0_GLO_CFG, MT_WFDMA0_GLO_CFG_CSR_DISP_BASE_PTR_CHAIN_EN);
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "  GLO_CFG after CHAIN_EN: 0x%08x\n", val);
+
+	/*
 	 * Now configure DMA prefetch registers.
 	 * This must happen BEFORE we try to write to ring BASE/CNT registers.
 	 */
@@ -1138,10 +1148,48 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	 * Configure FWDL ring (ring 16)
 	 * NOTE: Prefetch was already configured in mt7927_dma_prefetch() above.
 	 * Now the ring BASE/CNT registers should accept writes.
+	 *
+	 * CRITICAL: We must verify the BASE address is actually written!
+	 * If it reads back as 0, the DMA engine will try to fetch from
+	 * address 0x0, causing IOMMU page faults.
 	 */
 	dev_info(&dev->pdev->dev, "  Configuring FWDL ring (ring 16)...\n");
+	dev_info(&dev->pdev->dev, "  Ring DMA address: 0x%08x (phys)\n",
+		 lower_32_bits(dev->tx_ring_dma));
+
+	/* Write BASE register */
 	mt7927_wr_debug(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE,
 			lower_32_bits(dev->tx_ring_dma), "RING16_BASE");
+
+	/* Verify the BASE register accepted our write */
+	{
+		u32 base_readback = mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE);
+		if (base_readback != lower_32_bits(dev->tx_ring_dma)) {
+			dev_err(&dev->pdev->dev,
+				"  CRITICAL: Ring BASE not writable! Wrote 0x%08x, read 0x%08x\n",
+				lower_32_bits(dev->tx_ring_dma), base_readback);
+			dev_err(&dev->pdev->dev,
+				"  DMA will fail - device will try to fetch from address 0x%08x!\n",
+				base_readback);
+
+			/*
+			 * Try an alternative approach: maybe we need to disable DMA first
+			 * before writing ring registers, then re-enable.
+			 */
+			dev_info(&dev->pdev->dev, "  Trying workaround: disable DMA, write, re-enable...\n");
+			mt7927_clear(dev, MT_WFDMA0_GLO_CFG,
+				     MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN);
+			udelay(100);
+
+			/* Try writing again */
+			mt7927_wr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE,
+				  lower_32_bits(dev->tx_ring_dma));
+			base_readback = mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE);
+			dev_info(&dev->pdev->dev, "  After workaround: BASE = 0x%08x\n",
+				 base_readback);
+		}
+	}
+
 	mt7927_wr_debug(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE + 0x04,
 			dev->tx_ring_size, "RING16_CNT");
 	mt7927_wr_debug(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE + 0x08,
@@ -1396,9 +1444,25 @@ static int mt7927_load_patch(struct mt7927_dev *dev)
 	const struct mt7927_patch_sec *sec;
 	const u8 *fw_data;
 	u32 n_section;
+	u32 ring_base;
 	int ret, i;
 
 	dev_info(&dev->pdev->dev, "=== Loading Patch Firmware ===\n");
+
+	/*
+	 * CRITICAL: Verify ring BASE is non-zero before attempting DMA!
+	 * If the ring BASE is 0, the device will try to DMA from address 0,
+	 * causing IOMMU page faults.
+	 */
+	ring_base = mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE);
+	dev_info(&dev->pdev->dev, "  Pre-DMA check: Ring 16 BASE = 0x%08x\n", ring_base);
+	if (ring_base == 0) {
+		dev_err(&dev->pdev->dev,
+			"  ABORT: Ring BASE is 0! DMA would cause page faults.\n");
+		dev_err(&dev->pdev->dev,
+			"  Ring registers are not writable. Check DMA initialization.\n");
+		return -EIO;
+	}
 
 	/* Request patch firmware */
 	ret = request_firmware(&fw,
