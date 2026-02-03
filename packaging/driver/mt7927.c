@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.4.3"
+#define DRV_VERSION "0.5.0"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -116,6 +116,9 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 #define MT_TX_RING_BASE			(MT_WFDMA0_BASE + 0x300)
 #define MT_RING_SIZE			0x10
 
+/* RX Ring registers */
+#define MT_RX_RING_BASE			(MT_WFDMA0_BASE + 0x500)
+
 /*
  * TX Ring Extended Control Registers - CRITICAL for ring enablement!
  * These MUST be configured BEFORE writing to RING_BASE/CNT registers.
@@ -194,6 +197,8 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 #define MT7927_TX_RING_SIZE		2048
 #define MT7927_TX_MCU_RING_SIZE		256
 #define MT7927_TX_FWDL_RING_SIZE	128
+#define MT7927_RX_MCU_RING_SIZE		512	/* RX ring for MCU events */
+#define MT7927_RX_BUF_SIZE		2048	/* Per-descriptor RX buffer */
 
 /* =============================================================================
  * DMA Descriptor
@@ -393,12 +398,26 @@ struct mt7927_dev {
 	void __iomem *regs;
 	resource_size_t regs_len;	/* BAR0 length for bounds checking */
 
-	/* DMA rings */
+	/* TX Ring 16 - Firmware Download (FWDL) */
 	struct mt76_desc *tx_ring;
 	dma_addr_t tx_ring_dma;
 	int tx_ring_size;
 	int tx_ring_head;		/* Next descriptor to use */
 	int tx_ring_tail;		/* Next descriptor to complete */
+
+	/* TX Ring 15 - MCU Commands (WM) */
+	struct mt76_desc *mcu_ring;
+	dma_addr_t mcu_ring_dma;
+	int mcu_ring_size;
+	int mcu_ring_head;
+
+	/* RX Ring 0 - MCU Events */
+	struct mt76_desc *rx_ring;
+	dma_addr_t rx_ring_dma;
+	int rx_ring_size;
+	int rx_ring_head;
+	void *rx_buf;			/* RX buffer pool */
+	dma_addr_t rx_buf_dma;
 
 	/* Firmware buffer */
 	void *fw_buf;
@@ -1197,14 +1216,122 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	mt7927_wr_debug(dev, MT_TX_RING_BASE + 16 * MT_RING_SIZE + 0x0c,
 			0, "RING16_DIDX");
 
+	/*
+	 * v0.5.0: Also configure Ring 15 (MCU commands) and RX Ring 0 (MCU events)
+	 * These are REQUIRED for the ROM bootloader to process MCU commands
+	 * like PATCH_SEM_CONTROL and TARGET_ADDRESS_LEN_REQ.
+	 *
+	 * Without these, the ROM bootloader ignores FW_SCATTER data on Ring 16!
+	 */
+
+	/* Allocate MCU command ring (TX Ring 15) */
+	dev->mcu_ring_size = MT7927_TX_MCU_RING_SIZE;
+	dev->mcu_ring = dma_alloc_coherent(&dev->pdev->dev,
+					   dev->mcu_ring_size * sizeof(struct mt76_desc),
+					   &dev->mcu_ring_dma,
+					   GFP_KERNEL);
+	if (!dev->mcu_ring) {
+		dev_err(&dev->pdev->dev, "  Failed to allocate MCU command ring\n");
+		ret = -ENOMEM;
+		goto err_free_tx_ring;
+	}
+	memset(dev->mcu_ring, 0, dev->mcu_ring_size * sizeof(struct mt76_desc));
+	dev->mcu_ring_head = 0;
+
+	dev_info(&dev->pdev->dev, "  MCU ring (Ring 15) allocated: %d descriptors at %pad\n",
+		 dev->mcu_ring_size, &dev->mcu_ring_dma);
+
+	/* Configure MCU command ring (ring 15) */
+	dev_info(&dev->pdev->dev, "  Configuring MCU ring (ring 15)...\n");
+	mt7927_wr_debug(dev, MT_TX_RING_BASE + 15 * MT_RING_SIZE,
+			lower_32_bits(dev->mcu_ring_dma), "RING15_BASE");
+	mt7927_wr_debug(dev, MT_TX_RING_BASE + 15 * MT_RING_SIZE + 0x04,
+			dev->mcu_ring_size, "RING15_CNT");
+	mt7927_wr_debug(dev, MT_TX_RING_BASE + 15 * MT_RING_SIZE + 0x08,
+			0, "RING15_CIDX");
+	mt7927_wr_debug(dev, MT_TX_RING_BASE + 15 * MT_RING_SIZE + 0x0c,
+			0, "RING15_DIDX");
+
+	/* Allocate RX ring (RX Ring 0) for MCU events/responses */
+	dev->rx_ring_size = MT7927_RX_MCU_RING_SIZE;
+	dev->rx_ring = dma_alloc_coherent(&dev->pdev->dev,
+					  dev->rx_ring_size * sizeof(struct mt76_desc),
+					  &dev->rx_ring_dma,
+					  GFP_KERNEL);
+	if (!dev->rx_ring) {
+		dev_err(&dev->pdev->dev, "  Failed to allocate RX ring\n");
+		ret = -ENOMEM;
+		goto err_free_mcu_ring;
+	}
+	memset(dev->rx_ring, 0, dev->rx_ring_size * sizeof(struct mt76_desc));
+	dev->rx_ring_head = 0;
+
+	/* Allocate RX buffer pool */
+	dev->rx_buf = dma_alloc_coherent(&dev->pdev->dev,
+					 dev->rx_ring_size * MT7927_RX_BUF_SIZE,
+					 &dev->rx_buf_dma,
+					 GFP_KERNEL);
+	if (!dev->rx_buf) {
+		dev_err(&dev->pdev->dev, "  Failed to allocate RX buffers\n");
+		ret = -ENOMEM;
+		goto err_free_rx_ring;
+	}
+
+	/* Initialize RX descriptors with buffer addresses */
+	{
+		int i;
+		for (i = 0; i < dev->rx_ring_size; i++) {
+			dma_addr_t buf_dma = dev->rx_buf_dma + i * MT7927_RX_BUF_SIZE;
+			dev->rx_ring[i].buf0 = cpu_to_le32(lower_32_bits(buf_dma));
+			dev->rx_ring[i].buf1 = cpu_to_le32(upper_32_bits(buf_dma));
+			/* Control: buffer length, no DMA_DONE yet */
+			dev->rx_ring[i].ctrl = cpu_to_le32(
+				FIELD_PREP(MT_DMA_CTL_SD_LEN0, MT7927_RX_BUF_SIZE));
+			dev->rx_ring[i].info = 0;
+		}
+	}
+
+	dev_info(&dev->pdev->dev, "  RX ring (Ring 0) allocated: %d descriptors at %pad\n",
+		 dev->rx_ring_size, &dev->rx_ring_dma);
+
+	/* Configure RX ring (ring 0) */
+	dev_info(&dev->pdev->dev, "  Configuring RX ring (ring 0)...\n");
+	mt7927_wr_debug(dev, MT_RX_RING_BASE + 0 * MT_RING_SIZE,
+			lower_32_bits(dev->rx_ring_dma), "RX_RING0_BASE");
+	mt7927_wr_debug(dev, MT_RX_RING_BASE + 0 * MT_RING_SIZE + 0x04,
+			dev->rx_ring_size, "RX_RING0_CNT");
+	mt7927_wr_debug(dev, MT_RX_RING_BASE + 0 * MT_RING_SIZE + 0x08,
+			0, "RX_RING0_CIDX");
+	mt7927_wr_debug(dev, MT_RX_RING_BASE + 0 * MT_RING_SIZE + 0x0c,
+			0, "RX_RING0_DIDX");
+
+	/* Kick RX ring - set CPU index to ring size to indicate all buffers available */
+	mt7927_wr(dev, MT_RX_RING_BASE + 0 * MT_RING_SIZE + 0x08,
+		  dev->rx_ring_size - 1);
+
 	/* Enable DMA */
 	ret = mt7927_dma_enable(dev);
 	if (ret)
-		goto err_free_ring;
+		goto err_free_rx_buf;
 
 	return 0;
 
-err_free_ring:
+err_free_rx_buf:
+	dma_free_coherent(&dev->pdev->dev,
+			  dev->rx_ring_size * MT7927_RX_BUF_SIZE,
+			  dev->rx_buf, dev->rx_buf_dma);
+	dev->rx_buf = NULL;
+err_free_rx_ring:
+	dma_free_coherent(&dev->pdev->dev,
+			  dev->rx_ring_size * sizeof(struct mt76_desc),
+			  dev->rx_ring, dev->rx_ring_dma);
+	dev->rx_ring = NULL;
+err_free_mcu_ring:
+	dma_free_coherent(&dev->pdev->dev,
+			  dev->mcu_ring_size * sizeof(struct mt76_desc),
+			  dev->mcu_ring, dev->mcu_ring_dma);
+	dev->mcu_ring = NULL;
+err_free_tx_ring:
 	dma_free_coherent(&dev->pdev->dev,
 			  dev->tx_ring_size * sizeof(struct mt76_desc),
 			  dev->tx_ring, dev->tx_ring_dma);
@@ -1226,6 +1353,27 @@ static void mt7927_dma_cleanup(struct mt7927_dev *dev)
 		dma_free_coherent(&dev->pdev->dev, dev->fw_size,
 				  dev->fw_buf, dev->fw_dma);
 		dev->fw_buf = NULL;
+	}
+
+	if (dev->rx_buf) {
+		dma_free_coherent(&dev->pdev->dev,
+				  dev->rx_ring_size * MT7927_RX_BUF_SIZE,
+				  dev->rx_buf, dev->rx_buf_dma);
+		dev->rx_buf = NULL;
+	}
+
+	if (dev->rx_ring) {
+		dma_free_coherent(&dev->pdev->dev,
+				  dev->rx_ring_size * sizeof(struct mt76_desc),
+				  dev->rx_ring, dev->rx_ring_dma);
+		dev->rx_ring = NULL;
+	}
+
+	if (dev->mcu_ring) {
+		dma_free_coherent(&dev->pdev->dev,
+				  dev->mcu_ring_size * sizeof(struct mt76_desc),
+				  dev->mcu_ring, dev->mcu_ring_dma);
+		dev->mcu_ring = NULL;
 	}
 
 	if (dev->tx_ring) {
@@ -1253,14 +1401,268 @@ static u32 mt7927_mcu_txd0_fw(u16 len)
 
 /*
  * Get next MCU sequence number (1-15, wraps)
- * Used for MCU command acknowledgment (not yet implemented)
  */
-static u8 __maybe_unused mt7927_mcu_next_seq(struct mt7927_dev *dev)
+static u8 mt7927_mcu_next_seq(struct mt7927_dev *dev)
 {
 	dev->mcu_seq = (dev->mcu_seq + 1) & 0xf;
 	if (dev->mcu_seq == 0)
 		dev->mcu_seq = 1;
 	return dev->mcu_seq;
+}
+
+/*
+ * Build MCU TXD word 0 for MCU commands (via Ring 15)
+ */
+static u32 mt7927_mcu_txd0_cmd(u16 len)
+{
+	return FIELD_PREP(MT_TXD0_TX_BYTES, len) |
+	       FIELD_PREP(MT_TXD0_PKT_FMT, MT_TX_TYPE_CMD) |
+	       FIELD_PREP(MT_TXD0_Q_IDX, MT_TX_MCU_PORT_RX_Q0);
+}
+
+/*
+ * Queue an MCU command to Ring 15 (MCU WM queue)
+ */
+static int mt7927_dma_tx_queue_mcu(struct mt7927_dev *dev, dma_addr_t data_dma,
+				   int data_len)
+{
+	struct mt76_desc *desc;
+	u32 ctrl;
+	int idx;
+
+	idx = dev->mcu_ring_head;
+	desc = &dev->mcu_ring[idx];
+
+	/* Fill descriptor */
+	desc->buf0 = cpu_to_le32(lower_32_bits(data_dma));
+	desc->buf1 = cpu_to_le32(upper_32_bits(data_dma));
+	desc->info = 0;
+
+	/* Control: length + last segment */
+	ctrl = FIELD_PREP(MT_DMA_CTL_SD_LEN0, data_len) |
+	       MT_DMA_CTL_LAST_SEC0;
+	desc->ctrl = cpu_to_le32(ctrl);
+
+	if (debug_regs)
+		dev_info(&dev->pdev->dev,
+			 "  MCU Desc: buf0=0x%08x ctrl=0x%08x len=%d\n",
+			 le32_to_cpu(desc->buf0), le32_to_cpu(desc->ctrl), data_len);
+
+	/* Memory barrier before kicking DMA */
+	wmb();
+
+	/* Advance head */
+	dev->mcu_ring_head = (idx + 1) % dev->mcu_ring_size;
+
+	/* Kick DMA - write CPU index to Ring 15 */
+	mt7927_wr(dev, MT_TX_RING_BASE + 15 * MT_RING_SIZE + 0x08,
+		  dev->mcu_ring_head);
+
+	return 0;
+}
+
+/*
+ * Wait for MCU command ring to drain
+ */
+static int mt7927_mcu_tx_wait(struct mt7927_dev *dev, int timeout_ms)
+{
+	u32 cpu_idx, dma_idx;
+	int i;
+
+	for (i = 0; i < timeout_ms; i++) {
+		cpu_idx = mt7927_rr(dev, MT_TX_RING_BASE + 15 * MT_RING_SIZE + 0x08);
+		dma_idx = mt7927_rr(dev, MT_TX_RING_BASE + 15 * MT_RING_SIZE + 0x0c);
+
+		if (cpu_idx == dma_idx)
+			return 0;
+
+		usleep_range(1000, 2000);
+	}
+
+	dev_warn(&dev->pdev->dev,
+		 "  MCU DMA wait timeout: cpu_idx=%d dma_idx=%d\n", cpu_idx, dma_idx);
+	return -ETIMEDOUT;
+}
+
+/*
+ * Wait for MCU response on RX Ring 0
+ *
+ * Returns: 0 on success, negative on error
+ * On success, *resp_data and *resp_len contain the response if not NULL
+ */
+static int mt7927_mcu_wait_response(struct mt7927_dev *dev, int timeout_ms,
+				    u8 expected_seq)
+{
+	u32 cpu_idx, dma_idx;
+	int i;
+
+	dev_info(&dev->pdev->dev, "  Waiting for MCU response (seq=%d)...\n",
+		 expected_seq);
+
+	for (i = 0; i < timeout_ms; i++) {
+		cpu_idx = mt7927_rr(dev, MT_RX_RING_BASE + 0 * MT_RING_SIZE + 0x08);
+		dma_idx = mt7927_rr(dev, MT_RX_RING_BASE + 0 * MT_RING_SIZE + 0x0c);
+
+		/* If DMA has advanced past our last processed index, we have data */
+		if (cpu_idx != dma_idx) {
+			/* For now, just log that we got something */
+			struct mt76_desc *desc = &dev->rx_ring[cpu_idx];
+			u32 ctrl = le32_to_cpu(desc->ctrl);
+
+			if (ctrl & MT_DMA_CTL_DMA_DONE) {
+				int len = FIELD_GET(MT_DMA_CTL_SD_LEN0, ctrl);
+				dev_info(&dev->pdev->dev,
+					 "  MCU response received: idx=%d len=%d\n",
+					 cpu_idx, len);
+
+				/* Recycle descriptor - clear DMA_DONE and advance */
+				desc->ctrl = cpu_to_le32(
+					FIELD_PREP(MT_DMA_CTL_SD_LEN0, MT7927_RX_BUF_SIZE));
+				wmb();
+
+				/* Advance CPU index */
+				mt7927_wr(dev, MT_RX_RING_BASE + 0 * MT_RING_SIZE + 0x08,
+					  (cpu_idx + 1) % dev->rx_ring_size);
+
+				return 0;
+			}
+		}
+
+		usleep_range(1000, 2000);
+	}
+
+	dev_warn(&dev->pdev->dev,
+		 "  MCU response timeout: cpu_idx=%d dma_idx=%d\n", cpu_idx, dma_idx);
+	return -ETIMEDOUT;
+}
+
+/*
+ * Send MCU command and optionally wait for response
+ *
+ * This builds the MCU TXD header and sends the command via Ring 15.
+ * Used for ROM bootloader commands like PATCH_SEM_CONTROL.
+ */
+static int mt7927_mcu_send_msg(struct mt7927_dev *dev, u8 cmd,
+			       const void *data, int len, bool wait_resp)
+{
+	struct mt7927_mcu_hdr *hdr;
+	int total_len;
+	u8 seq;
+	int ret;
+
+	/* Allocate MCU command buffer if needed */
+	if (!dev->mcu_buf) {
+		dev->mcu_buf = dma_alloc_coherent(&dev->pdev->dev,
+						  MT7927_FW_CHUNK_SIZE + 256,
+						  &dev->mcu_dma, GFP_KERNEL);
+		if (!dev->mcu_buf)
+			return -ENOMEM;
+	}
+
+	/* Total packet = TXD (32 bytes) + MCU header + data */
+	total_len = sizeof(struct mt7927_mcu_txd) + sizeof(*hdr) + len;
+
+	/* Build MCU header at start of buffer */
+	memset(dev->mcu_buf, 0, total_len);
+
+	/* First 32 bytes: TXD */
+	{
+		__le32 *txd = dev->mcu_buf;
+		txd[0] = cpu_to_le32(mt7927_mcu_txd0_cmd(total_len));
+	}
+
+	/* MCU header follows TXD */
+	hdr = dev->mcu_buf + sizeof(struct mt7927_mcu_txd);
+	seq = mt7927_mcu_next_seq(dev);
+
+	hdr->len = cpu_to_le16(sizeof(*hdr) + len);
+	hdr->pq_id = cpu_to_le16(0x8000);  /* MCU queue ID */
+	hdr->cid = cmd;
+	hdr->pkt_type = MT_MCU_PKT_ID;
+	hdr->set_query = MCU_CMD_SET;
+	hdr->seq = seq;
+	hdr->s2d_index = MCU_S2D_H2N;
+
+	/* Copy payload data after header */
+	if (data && len > 0)
+		memcpy(dev->mcu_buf + sizeof(struct mt7927_mcu_txd) + sizeof(*hdr),
+		       data, len);
+
+	/* Sync buffer to device */
+	dma_sync_single_for_device(&dev->pdev->dev, dev->mcu_dma,
+				   total_len, DMA_TO_DEVICE);
+
+	dev_info(&dev->pdev->dev,
+		 "  Sending MCU cmd=0x%02x seq=%d len=%d total=%d\n",
+		 cmd, seq, len, total_len);
+
+	/* Queue to Ring 15 */
+	ret = mt7927_dma_tx_queue_mcu(dev, dev->mcu_dma, total_len);
+	if (ret)
+		return ret;
+
+	/* Wait for DMA to complete */
+	ret = mt7927_mcu_tx_wait(dev, 100);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "  MCU command DMA timeout\n");
+		return ret;
+	}
+
+	/* Wait for response if requested */
+	if (wait_resp) {
+		ret = mt7927_mcu_wait_response(dev, 500, seq);
+		if (ret) {
+			dev_warn(&dev->pdev->dev,
+				 "  MCU response timeout (cmd=0x%02x) - ROM may not be ready\n",
+				 cmd);
+			/* Don't fail - ROM might process command without explicit ACK */
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * Acquire patch semaphore from ROM bootloader
+ *
+ * This MUST be called before sending any firmware data!
+ * The ROM bootloader uses a semaphore to coordinate patch loading.
+ */
+static int mt7927_mcu_patch_sem_ctrl(struct mt7927_dev *dev, bool get)
+{
+	struct {
+		__le32 op;
+	} req = {
+		.op = cpu_to_le32(get ? PATCH_SEM_GET : PATCH_SEM_RELEASE),
+	};
+
+	dev_info(&dev->pdev->dev, "=== MCU PATCH_SEM_CONTROL (%s) ===\n",
+		 get ? "GET" : "RELEASE");
+
+	return mt7927_mcu_send_msg(dev, MCU_CMD_PATCH_SEM_CTRL,
+				   &req, sizeof(req), true);
+}
+
+/*
+ * Initialize patch download - tells ROM the target address and length
+ */
+static int mt7927_mcu_init_download(struct mt7927_dev *dev, u32 addr, u32 len)
+{
+	struct {
+		__le32 addr;
+		__le32 len;
+		__le32 mode;
+	} req = {
+		.addr = cpu_to_le32(addr),
+		.len = cpu_to_le32(len),
+		.mode = cpu_to_le32(DL_MODE_NEED_RSP),
+	};
+
+	dev_info(&dev->pdev->dev, "=== MCU TARGET_ADDRESS_LEN_REQ ===\n");
+	dev_info(&dev->pdev->dev, "  addr=0x%08x len=%d\n", addr, len);
+
+	return mt7927_mcu_send_msg(dev, MCU_CMD_TARGET_ADDRESS_LEN_REQ,
+				   &req, sizeof(req), true);
 }
 
 /*
@@ -1536,6 +1938,18 @@ static int mt7927_load_patch(struct mt7927_dev *dev)
 		goto out;
 	}
 
+	/*
+	 * v0.5.0: Acquire patch semaphore from ROM bootloader FIRST!
+	 * This tells the ROM we're about to download a patch.
+	 * Without this, the ROM ignores our FW_SCATTER data.
+	 */
+	ret = mt7927_mcu_patch_sem_ctrl(dev, true);
+	if (ret) {
+		dev_warn(&dev->pdev->dev,
+			 "  PATCH_SEM_CONTROL failed: %d (continuing anyway)\n", ret);
+		/* Don't fail - try downloading anyway */
+	}
+
 	/* Section headers follow the main header */
 	sec = (const struct mt7927_patch_sec *)(fw->data + sizeof(*hdr));
 
@@ -1555,7 +1969,18 @@ static int mt7927_load_patch(struct mt7927_dev *dev)
 			dev_err(&dev->pdev->dev,
 				"  Section %d exceeds file size\n", i);
 			ret = -EINVAL;
-			goto out;
+			goto out_release_sem;
+		}
+
+		/*
+		 * v0.5.0: Send TARGET_ADDRESS_LEN_REQ to tell ROM where to put data
+		 * This MUST be sent before FW_SCATTER for each section!
+		 */
+		ret = mt7927_mcu_init_download(dev, sec_addr, sec_size);
+		if (ret) {
+			dev_warn(&dev->pdev->dev,
+				 "  TARGET_ADDRESS_LEN_REQ failed: %d (continuing)\n", ret);
+			/* Don't fail - try downloading anyway */
 		}
 
 		/*
@@ -1577,13 +2002,16 @@ static int mt7927_load_patch(struct mt7927_dev *dev)
 		if (ret) {
 			dev_err(&dev->pdev->dev,
 				"  Section %d download failed: %d\n", i, ret);
-			goto out;
+			goto out_release_sem;
 		}
 	}
 
 	dev_info(&dev->pdev->dev, "  Patch firmware download complete\n");
 	ret = 0;
 
+out_release_sem:
+	/* Release patch semaphore */
+	mt7927_mcu_patch_sem_ctrl(dev, false);
 out:
 	release_firmware(fw);
 	return ret;
