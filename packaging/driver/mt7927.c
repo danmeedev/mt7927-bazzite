@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.6.0"
+#define DRV_VERSION "0.7.0"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -167,6 +167,7 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 #define MT_WFDMA0_TX_RING0_EXT_CTRL	(MT_WFDMA0_BASE + 0x600)
 #define MT_WFDMA0_TX_RING1_EXT_CTRL	(MT_WFDMA0_BASE + 0x604)
 #define MT_WFDMA0_TX_RING2_EXT_CTRL	(MT_WFDMA0_BASE + 0x608)
+#define MT_WFDMA0_TX_RING3_EXT_CTRL	(MT_WFDMA0_BASE + 0x60c)
 #define MT_WFDMA0_TX_RING15_EXT_CTRL	(MT_WFDMA0_BASE + 0x63c)
 #define MT_WFDMA0_TX_RING16_EXT_CTRL	(MT_WFDMA0_BASE + 0x640)
 
@@ -181,25 +182,32 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 
 /*
  * MT7925/MT7927 prefetch configuration from kernel mt792x_dma_prefetch():
- *   TX Ring 0:  PREFETCH(0x0000, 0x4)  - Data ring
- *   TX Ring 1:  PREFETCH(0x0040, 0x4)  - Data ring
- *   TX Ring 2:  PREFETCH(0x0080, 0x4)  - Data ring
- *   TX Ring 15: PREFETCH(0x0500, 0x4)  - MCU WM ring
- *   TX Ring 16: PREFETCH(0x0540, 0x4)  - Firmware download ring
- *   RX Ring 0:  PREFETCH(0x0100, 0x4)  - MCU events
- *   RX Ring 1:  PREFETCH(0x0140, 0x4)  - WM events
- *   RX Ring 2:  PREFETCH(0x0180, 0x4)  - Data ring
- *   RX Ring 3:  PREFETCH(0x01c0, 0x4)  - Data ring
+ *
+ * v0.7.0 FIX: These values were WRONG! The IOMMU faults at 0x0, 0x300, 0x500
+ * were because the prefetch buffer bases didn't match kernel values.
+ *
+ * CORRECT values from Linux kernel mt792x_dma.c for is_mt7925():
+ *   RX Ring 0:  PREFETCH(0x0000, 0x4)  - MCU events (was WRONG: 0x0100)
+ *   RX Ring 1:  PREFETCH(0x0040, 0x4)  - WM events (was WRONG: 0x0140)
+ *   RX Ring 2:  PREFETCH(0x0080, 0x4)  - Data ring (was WRONG: 0x0180)
+ *   RX Ring 3:  PREFETCH(0x00c0, 0x4)  - Data ring (was WRONG: 0x01c0)
+ *   TX Ring 0:  PREFETCH(0x0100, 0x10) - Data ring (was WRONG: 0x0000/0x4)
+ *   TX Ring 1:  PREFETCH(0x0200, 0x10) - Data ring (was WRONG: 0x0040/0x4)
+ *   TX Ring 2:  PREFETCH(0x0300, 0x10) - Data ring (was WRONG: 0x0080/0x4)
+ *   TX Ring 3:  PREFETCH(0x0400, 0x10) - Data ring (we didn't have this)
+ *   TX Ring 15: PREFETCH(0x0500, 0x4)  - MCU WM ring (CORRECT)
+ *   TX Ring 16: PREFETCH(0x0540, 0x4)  - Firmware download ring (CORRECT)
  */
-#define MT7925_RING0_PREFETCH		PREFETCH(0x0000, 0x4)
-#define MT7925_RING1_PREFETCH		PREFETCH(0x0040, 0x4)
-#define MT7925_RING2_PREFETCH		PREFETCH(0x0080, 0x4)
-#define MT7925_RING15_PREFETCH		PREFETCH(0x0500, 0x4)
-#define MT7925_RING16_PREFETCH		PREFETCH(0x0540, 0x4)
-#define MT7925_RX_RING0_PREFETCH	PREFETCH(0x0100, 0x4)
-#define MT7925_RX_RING1_PREFETCH	PREFETCH(0x0140, 0x4)
-#define MT7925_RX_RING2_PREFETCH	PREFETCH(0x0180, 0x4)
-#define MT7925_RX_RING3_PREFETCH	PREFETCH(0x01c0, 0x4)
+#define MT7925_TX_RING0_PREFETCH	PREFETCH(0x0100, 0x10)
+#define MT7925_TX_RING1_PREFETCH	PREFETCH(0x0200, 0x10)
+#define MT7925_TX_RING2_PREFETCH	PREFETCH(0x0300, 0x10)
+#define MT7925_TX_RING3_PREFETCH	PREFETCH(0x0400, 0x10)
+#define MT7925_TX_RING15_PREFETCH	PREFETCH(0x0500, 0x4)
+#define MT7925_TX_RING16_PREFETCH	PREFETCH(0x0540, 0x4)
+#define MT7925_RX_RING0_PREFETCH	PREFETCH(0x0000, 0x4)
+#define MT7925_RX_RING1_PREFETCH	PREFETCH(0x0040, 0x4)
+#define MT7925_RX_RING2_PREFETCH	PREFETCH(0x0080, 0x4)
+#define MT7925_RX_RING3_PREFETCH	PREFETCH(0x00c0, 0x4)
 
 /* Firmware status */
 #define MT_CONN_ON_MISC			0x7c0600f0
@@ -1159,45 +1167,70 @@ static int mt7927_dma_enable(struct mt7927_dev *dev)
  */
 static void mt7927_dma_prefetch(struct mt7927_dev *dev)
 {
-	dev_info(&dev->pdev->dev, "=== DMA Prefetch Configuration ===\n");
+	dev_info(&dev->pdev->dev, "=== DMA Prefetch Configuration (v0.7.0 FIXED) ===\n");
 
-	/* TX Rings - from mt792x_dma_prefetch() for MT7925 */
-	dev_info(&dev->pdev->dev, "  TX Ring 0 (Data)...\n");
-	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING0_EXT_CTRL,
-			MT7925_RING0_PREFETCH, "TX_RING0_EXT_CTRL");
+	/*
+	 * v0.7.0: CRITICAL FIX - Use CORRECT prefetch values from kernel!
+	 *
+	 * The previous values were causing IOMMU faults at addresses like
+	 * 0x0, 0x300, 0x500 because the prefetch buffer layout was wrong.
+	 *
+	 * Kernel order: RX rings first (base 0x0000-0x00c0), then TX rings
+	 * (base 0x0100-0x0540). Depth is 0x4 for MCU rings, 0x10 for data rings.
+	 */
 
-	dev_info(&dev->pdev->dev, "  TX Ring 1 (Data)...\n");
-	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING1_EXT_CTRL,
-			MT7925_RING1_PREFETCH, "TX_RING1_EXT_CTRL");
-
-	dev_info(&dev->pdev->dev, "  TX Ring 2 (Data)...\n");
-	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING2_EXT_CTRL,
-			MT7925_RING2_PREFETCH, "TX_RING2_EXT_CTRL");
-
-	dev_info(&dev->pdev->dev, "  TX Ring 15 (MCU WM)...\n");
-	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING15_EXT_CTRL,
-			MT7925_RING15_PREFETCH, "TX_RING15_EXT_CTRL");
-
-	dev_info(&dev->pdev->dev, "  TX Ring 16 (FWDL)...\n");
-	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING16_EXT_CTRL,
-			MT7925_RING16_PREFETCH, "TX_RING16_EXT_CTRL");
-
-	/* RX Rings */
-	dev_info(&dev->pdev->dev, "  RX Ring 0 (MCU Events)...\n");
+	/* RX Rings FIRST - bases at 0x0000, 0x0040, 0x0080, 0x00c0 */
+	dev_info(&dev->pdev->dev, "  RX Ring 0 (MCU Events) = 0x%08x...\n",
+		 MT7925_RX_RING0_PREFETCH);
 	mt7927_wr_debug(dev, MT_WFDMA0_RX_RING0_EXT_CTRL,
 			MT7925_RX_RING0_PREFETCH, "RX_RING0_EXT_CTRL");
 
-	dev_info(&dev->pdev->dev, "  RX Ring 1 (WM Events)...\n");
+	dev_info(&dev->pdev->dev, "  RX Ring 1 (WM Events) = 0x%08x...\n",
+		 MT7925_RX_RING1_PREFETCH);
 	mt7927_wr_debug(dev, MT_WFDMA0_RX_RING1_EXT_CTRL,
 			MT7925_RX_RING1_PREFETCH, "RX_RING1_EXT_CTRL");
 
-	dev_info(&dev->pdev->dev, "  RX Ring 2 (Data)...\n");
+	dev_info(&dev->pdev->dev, "  RX Ring 2 (Data) = 0x%08x...\n",
+		 MT7925_RX_RING2_PREFETCH);
 	mt7927_wr_debug(dev, MT_WFDMA0_RX_RING2_EXT_CTRL,
 			MT7925_RX_RING2_PREFETCH, "RX_RING2_EXT_CTRL");
 
-	dev_info(&dev->pdev->dev, "  RX Ring 3 (Data)...\n");
+	dev_info(&dev->pdev->dev, "  RX Ring 3 (Data) = 0x%08x...\n",
+		 MT7925_RX_RING3_PREFETCH);
 	mt7927_wr_debug(dev, MT_WFDMA0_RX_RING3_EXT_CTRL,
 			MT7925_RX_RING3_PREFETCH, "RX_RING3_EXT_CTRL");
+
+	/* TX Rings - bases at 0x0100, 0x0200, 0x0300, 0x0400, 0x0500, 0x0540 */
+	dev_info(&dev->pdev->dev, "  TX Ring 0 (Data) = 0x%08x...\n",
+		 MT7925_TX_RING0_PREFETCH);
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING0_EXT_CTRL,
+			MT7925_TX_RING0_PREFETCH, "TX_RING0_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  TX Ring 1 (Data) = 0x%08x...\n",
+		 MT7925_TX_RING1_PREFETCH);
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING1_EXT_CTRL,
+			MT7925_TX_RING1_PREFETCH, "TX_RING1_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  TX Ring 2 (Data) = 0x%08x...\n",
+		 MT7925_TX_RING2_PREFETCH);
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING2_EXT_CTRL,
+			MT7925_TX_RING2_PREFETCH, "TX_RING2_EXT_CTRL");
+
+	/* TX Ring 3 - we didn't have this before! */
+	dev_info(&dev->pdev->dev, "  TX Ring 3 (Data) = 0x%08x...\n",
+		 MT7925_TX_RING3_PREFETCH);
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING3_EXT_CTRL,
+			MT7925_TX_RING3_PREFETCH, "TX_RING3_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  TX Ring 15 (MCU WM) = 0x%08x...\n",
+		 MT7925_TX_RING15_PREFETCH);
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING15_EXT_CTRL,
+			MT7925_TX_RING15_PREFETCH, "TX_RING15_EXT_CTRL");
+
+	dev_info(&dev->pdev->dev, "  TX Ring 16 (FWDL) = 0x%08x...\n",
+		 MT7925_TX_RING16_PREFETCH);
+	mt7927_wr_debug(dev, MT_WFDMA0_TX_RING16_EXT_CTRL,
+			MT7925_TX_RING16_PREFETCH, "TX_RING16_EXT_CTRL");
 
 	dev_info(&dev->pdev->dev, "  DMA prefetch configuration complete\n");
 }
