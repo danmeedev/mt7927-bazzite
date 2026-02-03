@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.5.0"
+#define DRV_VERSION "0.6.0"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -106,6 +106,43 @@ MODULE_PARM_DESC(disable_aspm, "Disable ASPM during init (default: false)");
 #define MT_WFDMA0_HOST_INT_STA		(MT_WFDMA0_BASE + 0x200)
 #define MT_PCIE_MAC_INT_ENABLE		0x10188
 #define MT_PCIE_MAC_INT_STATUS		0x10184
+
+/*
+ * Interrupt enable bits for MT_WFDMA0_HOST_INT_ENA
+ * These are CRITICAL for DMA to work! Without enabling
+ * the appropriate interrupt bits, the DMA engine will not
+ * fetch descriptors from our rings.
+ *
+ * From mt76/mt7925/pci.c and mt76/mt792x_core.c
+ */
+#define MT_INT_RX_DONE_0		BIT(0)	/* RX Ring 0 (MCU WM) */
+#define MT_INT_RX_DONE_1		BIT(1)	/* RX Ring 1 (MCU WM2) */
+#define MT_INT_RX_DONE_2		BIT(2)	/* RX Ring 2 (Data) */
+#define MT_INT_RX_DONE_3		BIT(3)	/* RX Ring 3 (Data) */
+#define MT_INT_TX_DONE_0		BIT(4)	/* TX Ring 0 (Band0 data) */
+#define MT_INT_TX_DONE_1		BIT(5)	/* TX Ring 1 */
+#define MT_INT_TX_DONE_2		BIT(6)	/* TX Ring 2 */
+#define MT_INT_TX_DONE_15		BIT(25)	/* TX Ring 15 (MCU WM) */
+#define MT_INT_TX_DONE_16		BIT(26)	/* TX Ring 16 (FWDL) */
+#define MT_INT_TX_DONE_17		BIT(27)	/* TX Ring 17 */
+#define MT_INT_MCU_CMD			BIT(29)	/* MCU command interrupt */
+
+/* Combined interrupt masks */
+#define MT_INT_TX_DONE_FWDL		(MT_INT_TX_DONE_15 | MT_INT_TX_DONE_16)
+#define MT_INT_RX_DONE_MCU		(MT_INT_RX_DONE_0 | MT_INT_RX_DONE_1)
+#define MT_INT_RX_DONE_ALL		(MT_INT_RX_DONE_0 | MT_INT_RX_DONE_1 | \
+					 MT_INT_RX_DONE_2 | MT_INT_RX_DONE_3)
+#define MT_INT_TX_DONE_ALL		(MT_INT_TX_DONE_0 | MT_INT_TX_DONE_15 | \
+					 MT_INT_TX_DONE_16)
+
+/* Additional MT7925-specific registers for interrupt/DMA priority */
+#define MT_WFDMA0_INT_RX_PRI		(MT_WFDMA0_BASE + 0x2c0)
+#define MT_WFDMA0_INT_TX_PRI		(MT_WFDMA0_BASE + 0x2c4)
+#define MT_UWFDMA0_GLO_CFG_EXT1		(MT_WFDMA0_BASE + 0x2b4)
+
+/* MCU to Host Software Interrupt Enable */
+#define MT_MCU2HOST_SW_INT_ENA		(MT_WFDMA0_BASE + 0x1f4)
+#define MT_MCU_CMD_WAKE_RX_PCIE		BIT(0)
 
 /* DMA Ring Pointers */
 #define MT_WFDMA0_RST_DTX_PTR		(MT_WFDMA0_BASE + 0x228)
@@ -999,7 +1036,7 @@ static int mt7927_dma_disable(struct mt7927_dev *dev, bool force)
 
 static int mt7927_dma_enable(struct mt7927_dev *dev)
 {
-	u32 val_before, val_after, expected;
+	u32 val_before, val_after, expected, int_ena;
 
 	dev_info(&dev->pdev->dev, "=== DMA Enable ===\n");
 
@@ -1045,6 +1082,68 @@ static int mt7927_dma_enable(struct mt7927_dev *dev)
 	if (!(val_after & MT_WFDMA0_GLO_CFG_RX_DMA_EN)) {
 		dev_err(&dev->pdev->dev, "  ERROR: RX_DMA_EN did not stick!\n");
 	}
+
+	/*
+	 * v0.6.0: CRITICAL - Enable interrupts for DMA rings!
+	 *
+	 * The kernel driver research revealed that DMA descriptors are NOT
+	 * fetched unless the corresponding interrupt enable bits are set.
+	 * This was the root cause of dma_idx stuck at 0!
+	 *
+	 * From mt7925/pci.c mt7925_pci_probe() and mt792x_dma_enable():
+	 *   1. MT7925-specific: Set priority registers
+	 *   2. Enable interrupts for TX rings 15/16 and RX rings
+	 *   3. Enable MCU wake interrupt
+	 */
+	dev_info(&dev->pdev->dev, "  === v0.6.0: Enabling DMA Interrupts ===\n");
+
+	/* Set MT7925-specific extended config (from kernel driver) */
+	dev_info(&dev->pdev->dev, "  Setting UWFDMA0_GLO_CFG_EXT1 bit 28...\n");
+	mt7927_rmw(dev, MT_UWFDMA0_GLO_CFG_EXT1, BIT(28), BIT(28));
+	dev_info(&dev->pdev->dev, "  UWFDMA0_GLO_CFG_EXT1: 0x%08x\n",
+		 mt7927_rr(dev, MT_UWFDMA0_GLO_CFG_EXT1));
+
+	/* Set RX and TX interrupt priority (from mt792x_dma_enable for MT7925) */
+	dev_info(&dev->pdev->dev, "  Setting interrupt priorities...\n");
+	mt7927_set(dev, MT_WFDMA0_INT_RX_PRI, 0x0F00);
+	mt7927_set(dev, MT_WFDMA0_INT_TX_PRI, 0x7F00);
+	dev_info(&dev->pdev->dev, "  INT_RX_PRI: 0x%08x, INT_TX_PRI: 0x%08x\n",
+		 mt7927_rr(dev, MT_WFDMA0_INT_RX_PRI),
+		 mt7927_rr(dev, MT_WFDMA0_INT_TX_PRI));
+
+	/*
+	 * Enable interrupts for firmware download rings.
+	 * This is the KEY fix - without these bits set, the hardware
+	 * DMA engine will NOT fetch descriptors from our rings!
+	 *
+	 * Bits to enable:
+	 *   - BIT(0)  = RX Ring 0 (MCU WM events)
+	 *   - BIT(25) = TX Ring 15 (MCU commands)
+	 *   - BIT(26) = TX Ring 16 (FWDL scatter)
+	 *   - BIT(29) = MCU command interrupt
+	 */
+	int_ena = MT_INT_RX_DONE_0 |		/* RX Ring 0 for MCU responses */
+		  MT_INT_TX_DONE_15 |		/* TX Ring 15 for MCU commands */
+		  MT_INT_TX_DONE_16 |		/* TX Ring 16 for FW scatter */
+		  MT_INT_MCU_CMD;		/* MCU command processing */
+
+	dev_info(&dev->pdev->dev, "  Enabling HOST_INT_ENA: 0x%08x\n", int_ena);
+	dev_info(&dev->pdev->dev, "    RX_DONE_0=%d TX_DONE_15=%d TX_DONE_16=%d MCU_CMD=%d\n",
+		 !!(int_ena & MT_INT_RX_DONE_0),
+		 !!(int_ena & MT_INT_TX_DONE_15),
+		 !!(int_ena & MT_INT_TX_DONE_16),
+		 !!(int_ena & MT_INT_MCU_CMD));
+
+	mt7927_wr(dev, MT_WFDMA0_HOST_INT_ENA, int_ena);
+	val_after = mt7927_rr(dev, MT_WFDMA0_HOST_INT_ENA);
+	dev_info(&dev->pdev->dev, "  HOST_INT_ENA readback: 0x%08x %s\n",
+		 val_after, (val_after == int_ena) ? "OK" : "MISMATCH!");
+
+	/* Enable MCU wake on RX */
+	dev_info(&dev->pdev->dev, "  Enabling MCU2HOST_SW_INT_ENA...\n");
+	mt7927_set(dev, MT_MCU2HOST_SW_INT_ENA, MT_MCU_CMD_WAKE_RX_PCIE);
+	dev_info(&dev->pdev->dev, "  MCU2HOST_SW_INT_ENA: 0x%08x\n",
+		 mt7927_rr(dev, MT_MCU2HOST_SW_INT_ENA));
 
 	return 0;
 }
