@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.4.0"
+#define DRV_VERSION "0.4.1"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -346,7 +346,20 @@ struct mt7927_patch_sec {
 
 /* Patch semaphore response */
 #define PATCH_NOT_DL_SEM_SUCCESS	0x02
-#define PATCH_SEC_TYPE_NEED_DOWNLOAD	0x00
+
+/*
+ * Patch section type field interpretation:
+ * The type field uses specific bits to indicate section properties.
+ * Looking at the kernel driver mt76_connac2_load_patch():
+ *   - It checks for FW_FEATURE_NON_DL bit to skip non-downloadable sections
+ *   - The actual section type encoding varies
+ *
+ * For MT7925 patches, observed types:
+ *   0x30002 = downloadable section (seen in practice)
+ */
+#define PATCH_SEC_TYPE_MASK		0x3
+#define PATCH_SEC_ENC_TYPE_MASK		GENMASK(31, 24)
+#define PATCH_SEC_ENC_SCRAMBLE		BIT(24)
 
 /* Download mode flags */
 #define DL_MODE_ENCRYPT			BIT(0)
@@ -1446,23 +1459,26 @@ static int mt7927_load_patch(struct mt7927_dev *dev)
 			goto out;
 		}
 
-		/* Skip non-downloadable sections */
-		if (sec_type == PATCH_SEC_TYPE_NEED_DOWNLOAD) {
-			fw_data = fw->data + sec_offs;
+		/*
+		 * Download all sections - the type field indicates encryption,
+		 * not whether to download. The kernel driver downloads all
+		 * sections unless feature_set has FW_FEATURE_NON_DL.
+		 *
+		 * sec_type interpretation (from kernel):
+		 *   - Bits 0-1: Section type
+		 *   - Bit 24+: Encryption flags
+		 */
+		fw_data = fw->data + sec_offs;
 
-			dev_info(&dev->pdev->dev,
-				 "  Downloading section %d (%d bytes) to 0x%08x...\n",
-				 i, sec_size, sec_addr);
+		dev_info(&dev->pdev->dev,
+			 "  Downloading section %d (%d bytes) to 0x%08x...\n",
+			 i, sec_size, sec_addr);
 
-			ret = mt7927_mcu_send_firmware(dev, fw_data, sec_size);
-			if (ret) {
-				dev_err(&dev->pdev->dev,
-					"  Section %d download failed: %d\n", i, ret);
-				goto out;
-			}
-		} else {
-			dev_info(&dev->pdev->dev,
-				 "  Skipping section %d (type 0x%x)\n", i, sec_type);
+		ret = mt7927_mcu_send_firmware(dev, fw_data, sec_size);
+		if (ret) {
+			dev_err(&dev->pdev->dev,
+				"  Section %d download failed: %d\n", i, ret);
+			goto out;
 		}
 	}
 

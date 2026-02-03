@@ -130,6 +130,7 @@ The hardest part ahead is the MCU command protocol - it's complex and needs to m
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v0.4.1 | 2026-02-03 | **Fix section type check** - v0.4.0 was skipping all sections due to wrong type check. Now downloads all patch sections. |
 | v0.4.0 | 2026-02-03 | **Firmware DMA transfer via Ring 16.** Added MCU TXD construction, patch header parsing, and FW_SCATTER chunk transfer. First attempt at sending firmware to device. |
 | v0.3.4 | 2026-02-03 | **KEY FIX:** Leave LOGIC_RST bits SET (kernel pattern). This fixed ring register writes. |
 | v0.3.0 | 2026-02-03 | Add DMA ring prefetch configuration (MT_WFDMA0_TX_RING16_EXT_CTRL). |
