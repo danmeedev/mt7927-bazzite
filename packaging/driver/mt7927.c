@@ -21,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "0.3.3"
+#define DRV_VERSION "0.3.4"
 
 /* PCI IDs - MT7927 and known variants */
 #define MT7927_VENDOR_ID	0x14c3
@@ -776,7 +776,12 @@ static int mt7927_dma_disable(struct mt7927_dev *dev, bool force)
 	if (force) {
 		dev_info(&dev->pdev->dev, "  Force reset sequence...\n");
 
-		/* Force reset sequence: clear -> set -> clear */
+		/*
+		 * CRITICAL: The kernel driver does clear -> set and LEAVES
+		 * the RST bits SET! It does NOT do a final clear.
+		 * The bits being set seems to be required for ring register
+		 * access to work.
+		 */
 		mt7927_clear(dev, MT_WFDMA0_RST,
 			     MT_WFDMA0_RST_DMASHDL_ALL_RST |
 			     MT_WFDMA0_RST_LOGIC_RST);
@@ -785,11 +790,9 @@ static int mt7927_dma_disable(struct mt7927_dev *dev, bool force)
 			   MT_WFDMA0_RST_DMASHDL_ALL_RST |
 			   MT_WFDMA0_RST_LOGIC_RST);
 
-		mt7927_clear(dev, MT_WFDMA0_RST,
-			     MT_WFDMA0_RST_DMASHDL_ALL_RST |
-			     MT_WFDMA0_RST_LOGIC_RST);
+		/* NOTE: Kernel does NOT clear these bits again! */
 
-		dev_info(&dev->pdev->dev, "  WFDMA0_RST: 0x%08x\n",
+		dev_info(&dev->pdev->dev, "  WFDMA0_RST: 0x%08x (bits left SET)\n",
 			 mt7927_rr(dev, MT_WFDMA0_RST));
 	}
 
