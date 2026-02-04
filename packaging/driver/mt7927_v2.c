@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.14.0
+ * MT7927 WiFi 7 Linux Driver v2.15.0
+ *
+ * v2.15.0 Changes:
+ * - DISCOVERY: Ring BASE reads 0 but DMA transfers actually WORK!
+ * - FW regions transfer successfully via Ring 16 (FWDL)
+ * - Issue: FW_START via Ring 15 (MCU) - need to verify it's processed
+ * - Add Ring 15 CIDX/DIDX debug before/after FW_START command
+ * - Add alternative FW ready register polling (multiple locations)
+ * - Poll MCU_CMD register for changes after FW_START
  *
  * v2.14.0 Changes:
  * - CRITICAL: Try MCU WPDMA window (0x2000) instead of host WFDMA (0xD4000)
  * - Add DUMMY_CR write (BIT(1)) after DMA enable for handshake
- * - The kernel mt76 driver uses MCU address 0x54000xxx which maps to BAR 0x2xxx
- * - Ring registers may need MCU-side access, not host-side access
- * - Add extensive debug for both address ranges
- *
- * v2.13.0 Changes:
- * - CRITICAL FIX: Disable clock gating IMMEDIATELY after DMA reset
- * - Add prefetch (EXT_CTRL) register configuration before ring setup
- * - Without CLK_GAT_DIS before ring writes, BASE addresses stay 0x00000000
- * - Add debug verification of ring BASE address writes
+ * - Both HOST (0xD4xxx) and MCU (0x2xxx) ring BASE reads return 0
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -26,7 +26,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.14.0"
+#define DRV_VERSION "2.15.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -1081,10 +1081,31 @@ static int mt7927_mcu_start_firmware(struct mt7927_dev *dev, u32 addr)
 		.override = cpu_to_le32(addr ? addr : 0),
 		.option = cpu_to_le32(addr ? BIT(0) : 0),  /* Override if addr set */
 	};
+	u32 cidx_before, didx_before, cidx_after, didx_after;
+	int ret;
+
+	/* Dump Ring 15 state BEFORE command */
+	cidx_before = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX);
+	didx_before = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
 
 	dev_info(&dev->pdev->dev, "[FW] Start firmware: addr=0x%08x\n", addr);
+	dev_info(&dev->pdev->dev, "[FW] Ring15 BEFORE: CIDX=%d DIDX=%d\n", cidx_before, didx_before);
 
-	return mt7927_mcu_send_cmd(dev, MCU_CMD_FW_START_REQ, &req, sizeof(req));
+	ret = mt7927_mcu_send_cmd(dev, MCU_CMD_FW_START_REQ, &req, sizeof(req));
+
+	/* Dump Ring 15 state AFTER command - CIDX should have incremented */
+	cidx_after = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX);
+	didx_after = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
+	dev_info(&dev->pdev->dev, "[FW] Ring15 AFTER:  CIDX=%d DIDX=%d (ret=%d)\n", cidx_after, didx_after, ret);
+
+	if (cidx_after == cidx_before) {
+		dev_warn(&dev->pdev->dev, "[FW] WARNING: Ring15 CIDX didn't advance - command may not have been sent!\n");
+	}
+	if (didx_after != cidx_after) {
+		dev_warn(&dev->pdev->dev, "[FW] NOTE: Ring15 DIDX != CIDX - MCU hasn't processed command yet\n");
+	}
+
+	return ret;
 }
 
 /*
@@ -1144,21 +1165,51 @@ static int mt7927_fw_scatter(struct mt7927_dev *dev, const u8 *data, size_t len)
 
 static int mt7927_wait_fw_ready(struct mt7927_dev *dev)
 {
-	u32 val;
+	u32 val, val2, val3, mcu_cmd, ring15_cidx, ring15_didx;
 	int i;
 
+	/* Get Ring 15 state to verify FW_START was sent */
+	ring15_cidx = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX);
+	ring15_didx = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
+	dev_info(&dev->pdev->dev, "[FW] Ring15 state: CIDX=%d DIDX=%d\n", ring15_cidx, ring15_didx);
+
 	for (i = 0; i < FW_READY_TIMEOUT_MS; i++) {
+		/* Poll primary location: ConnInfra MISC */
 		val = mt7927_rr(dev, MT_CONN_MISC_BAR_OFS);
 		if ((val & MT_TOP_MISC2_FW_N9_RDY) == MT_TOP_MISC2_FW_N9_RDY) {
 			dev_info(&dev->pdev->dev, "[FW] Ready! MISC=0x%08x\n", val);
 			return 0;
 		}
-		if (i % 500 == 0)
-			dev_info(&dev->pdev->dev, "[FW] Waiting... MISC=0x%08x\n", val);
+
+		/* Also check alternative locations */
+		val2 = mt7927_rr(dev, FIXED_MAP_CONN_INFRA + 0x10);  /* WFSYS region +0x10 */
+		val3 = mt7927_rr(dev, FIXED_MAP_CONN_INFRA + 0x140); /* WFSYS_RST status */
+		mcu_cmd = mt7927_rr(dev, MT_MCU_CMD);
+
+		/* Check if MCU_CMD changed (firmware may signal via this register) */
+		if (mcu_cmd != 0) {
+			dev_info(&dev->pdev->dev, "[FW] MCU_CMD changed to 0x%08x!\n", mcu_cmd);
+		}
+
+		/* Check WFSYS +0x10 for potential FW ready bits */
+		if ((val2 & 0x3) == 0x3) {
+			dev_info(&dev->pdev->dev, "[FW] Ready via WFSYS+0x10=0x%08x!\n", val2);
+			return 0;
+		}
+
+		if (i % 500 == 0) {
+			/* Check Ring 15 DIDX to see if MCU processed command */
+			ring15_didx = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
+			dev_info(&dev->pdev->dev, "[FW] Waiting... MISC=0x%08x WFSYS+0x10=0x%08x RST=0x%08x MCU_CMD=0x%08x Ring15_DIDX=%d\n",
+				 val, val2, val3, mcu_cmd, ring15_didx);
+		}
 		msleep(1);
 	}
 
-	dev_warn(&dev->pdev->dev, "[FW] Timeout: MISC=0x%08x\n", val);
+	/* Final state dump on timeout */
+	ring15_didx = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
+	dev_warn(&dev->pdev->dev, "[FW] Timeout: MISC=0x%08x Ring15 CIDX=%d DIDX=%d\n",
+		 val, ring15_cidx, ring15_didx);
 	return -ETIMEDOUT;
 }
 
