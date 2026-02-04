@@ -20,7 +20,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.2.0"
+#define DRV_VERSION "2.3.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -269,37 +269,45 @@ static void mt7927_dump_fixed_map_regs(struct mt7927_dev *dev)
 {
 	dev_info(&dev->pdev->dev, "[DUMP] Checking registers via fixed map offsets:\n");
 
-	/* Check if we can read anything at all */
-	dev_info(&dev->pdev->dev, "  [0x%06x] WFDMA0 base area: 0x%08x\n",
-		 0xd4000, mt7927_rr(dev, 0xd4000));
+	/* WFDMA area */
 	dev_info(&dev->pdev->dev, "  [0x%06x] WFDMA0 GLO_CFG: 0x%08x\n",
 		 0xd4208, mt7927_rr(dev, 0xd4208));
 
 	/* Fixed map: CONN_INFRA_HOST (0x7c060000 -> 0xe0000) */
-	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_INFRA_HOST base: 0x%08x\n",
-		 CONN_INFRA_HOST_BAR_OFS, mt7927_rr(dev, CONN_INFRA_HOST_BAR_OFS));
-	dev_info(&dev->pdev->dev, "  [0x%06x] LPCTL (expect power ctl): 0x%08x\n",
+	dev_info(&dev->pdev->dev, "  [0x%06x] LPCTL: 0x%08x\n",
 		 MT_LPCTL_BAR_OFS, mt7927_rr(dev, MT_LPCTL_BAR_OFS));
-	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_MISC (expect status): 0x%08x\n",
+	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_MISC: 0x%08x\n",
 		 MT_CONN_MISC_BAR_OFS, mt7927_rr(dev, MT_CONN_MISC_BAR_OFS));
 
 	/* Fixed map: CONN_INFRA (0x7c000000 -> 0xf0000) */
-	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_INFRA base: 0x%08x\n",
+	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_INFRA: 0x%08x\n",
 		 FIXED_MAP_CONN_INFRA, mt7927_rr(dev, FIXED_MAP_CONN_INFRA));
+	dev_info(&dev->pdev->dev, "  [0x%06x] WFSYS_RST: 0x%08x\n",
+		 MT_WFSYS_RST_BAR_OFS, mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS));
+
+	/* Try to find ROM status - scan CONN_INFRA area */
+	/* 0x7c00124c should map to 0xf0000 + 0x124c = 0xf124c */
+	dev_info(&dev->pdev->dev, "  [0x%06x] ROM_INDEX (0x7c00124c): 0x%08x\n",
+		 0xf124c, mt7927_rr(dev, 0xf124c));
+
+	/* Try alternate ROM locations used by Gen4m */
+	dev_info(&dev->pdev->dev, "  [0x%06x] ALT ROM (0xf0100): 0x%08x\n",
+		 0xf0100, mt7927_rr(dev, 0xf0100));
+	dev_info(&dev->pdev->dev, "  [0x%06x] ALT ROM (0xf0200): 0x%08x\n",
+		 0xf0200, mt7927_rr(dev, 0xf0200));
 
 	/* Fixed map: WF_TOP_MISC_ON (0x81020000 -> 0xc0000) */
 	dev_info(&dev->pdev->dev, "  [0x%06x] WF_TOP_MISC_ON: 0x%08x\n",
 		 FIXED_MAP_WF_TOP_MISC_ON, mt7927_rr(dev, FIXED_MAP_WF_TOP_MISC_ON));
+	/* 0x810200f0 -> 0xc00f0 might have firmware status */
+	dev_info(&dev->pdev->dev, "  [0x%06x] WF_TOP_MISC+f0: 0x%08x\n",
+		 0xc00f0, mt7927_rr(dev, 0xc00f0));
 
-	/* Check some lower addresses that should always work */
-	dev_info(&dev->pdev->dev, "  [0x%06x] PCIe vendor ID area: 0x%08x\n",
-		 0x0, mt7927_rr(dev, 0x0));
-	dev_info(&dev->pdev->dev, "  [0x%06x] offset 0x100: 0x%08x\n",
-		 0x100, mt7927_rr(dev, 0x100));
-	dev_info(&dev->pdev->dev, "  [0x%06x] offset 0x1000: 0x%08x\n",
-		 0x1000, mt7927_rr(dev, 0x1000));
-	dev_info(&dev->pdev->dev, "  [0x%06x] offset 0x7000: 0x%08x\n",
-		 0x7000, mt7927_rr(dev, 0x7000));
+	/* Check MCU mailbox area */
+	dev_info(&dev->pdev->dev, "  [0x%06x] MCU_MBOX_0: 0x%08x\n",
+		 0x711c, mt7927_rr(dev, 0x711c));
+	dev_info(&dev->pdev->dev, "  [0x%06x] MCU_MBOX_1: 0x%08x\n",
+		 0x7120, mt7927_rr(dev, 0x7120));
 }
 
 /*
@@ -395,20 +403,23 @@ static int mt7927_power_handoff(struct mt7927_dev *dev)
 		msleep(1);
 	}
 
-	/* Small delay */
-	usleep_range(2000, 3000);
+	/* Longer delay after FW takes ownership - ASPM needs time */
+	dev_info(&dev->pdev->dev, "[PWR] Waiting 50ms for FW to stabilize...\n");
+	msleep(50);
 
 	/* Step 2: Take ownership BACK for driver (write CLR_OWN) */
 	dev_info(&dev->pdev->dev, "[PWR] Taking ownership back (CLR_OWN)...\n");
 	mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_CLR_OWN);
 
-	/* Poll until bit 2 (OWN_SYNC) becomes clear (driver owns) */
-	for (i = 0; i < 100; i++) {
+	/* Poll until bit 2 (OWN_SYNC) becomes clear (driver owns) - longer timeout */
+	for (i = 0; i < 500; i++) {
 		val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
 		if (!(val & PCIE_LPCR_HOST_OWN_SYNC)) {
 			dev_info(&dev->pdev->dev, "[PWR] Driver ownership acquired: 0x%08x\n", val);
 			return 0;
 		}
+		if (i % 50 == 0)
+			dev_info(&dev->pdev->dev, "[PWR] Waiting for CLR_OWN: 0x%08x (attempt %d)\n", val, i);
 		msleep(1);
 	}
 
