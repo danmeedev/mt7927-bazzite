@@ -1,13 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.0
+ * MT7927 WiFi 7 Linux Driver v2.4.0
  *
  * CRITICAL DISCOVERY: MT7927 uses MT6639 architecture (Gen4m), NOT MT7925 (Gen4).
  * This requires ConnInfra subsystem initialization before MCU communication.
  *
+ * v2.4.0 Changes:
+ * - Removed ROM ready check (not needed for Gen4m)
+ * - Added proper DMA ring initialization
+ * - Added firmware download infrastructure
+ *
  * Based on analysis of:
  * - MediaTek gen4m driver: https://github.com/Fede2782/MTK_modules
- * - Windows driver: mtkwlan.dat firmware uses MT6639 binaries
+ * - Linux kernel mt7925 driver
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -20,7 +25,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.3.0"
+#define DRV_VERSION "2.4.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -33,7 +38,7 @@ module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 
 /* =============================================================================
- * MT6639/MT7927 Register Definitions (from gen4m source)
+ * MT6639/MT7927 Register Definitions
  * =============================================================================
  */
 
@@ -43,7 +48,7 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define MT6639_CONNINFRA_VERSION_ID_E2	0x03010002
 #define MT6639_WF_VERSION_ID		0x03010001
 
-/* ConnInfra base addresses - CRITICAL for Gen4m */
+/* ConnInfra base addresses */
 #define CONNAC3X_CONN_CFG_ON_BASE	0x7C060000
 #define CONN_INFRA_CFG_BASE		0x830C0000
 
@@ -58,115 +63,160 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define HOST_CSR_FW_OWN_SET		(HOST_CSR_BASE + 0x118)
 #define HOST_CSR_MCU_SW_MAILBOX_0	(HOST_CSR_BASE + 0x11C)
 #define HOST_CSR_MCU_SW_MAILBOX_1	(HOST_CSR_BASE + 0x120)
-#define HOST_CSR_MCU_SW_MAILBOX_2	(HOST_CSR_BASE + 0x124)
-#define HOST_CSR_MCU_SW_MAILBOX_3	(HOST_CSR_BASE + 0x128)
-
-/* Address remapping registers */
-#define CONN_HIF_ON_ADDR_REMAP1		(HOST_CSR_BASE + 0x00C)
-#define CONN_HIF_ON_ADDR_REMAP2		(HOST_CSR_BASE + 0x010)
-
-/* Low Power Control - MT6639 uses CONNAC3X base */
-#define CONNAC3X_BN0_LPCTL_ADDR		(CONNAC3X_CONN_CFG_ON_BASE + 0x10)  /* 0x7C060010 */
-#define CONNAC3X_BN0_IRQ_STAT_ADDR	(CONNAC3X_CONN_CFG_ON_BASE + 0x14)
-#define CONNAC3X_BN0_IRQ_ENA_ADDR	(CONNAC3X_CONN_CFG_ON_BASE + 0x18)
-#define CONNAC3X_CONN_CFG_ON_MISC_ADDR	(CONNAC3X_CONN_CFG_ON_BASE + 0xF0)
-#define CONNAC3X_CONN_CFG_ON_EMI_ADDR	(CONNAC3X_CONN_CFG_ON_BASE + 0xD0C)
 
 /* LPCTL bits */
 #define PCIE_LPCR_HOST_SET_OWN		BIT(0)
 #define PCIE_LPCR_HOST_CLR_OWN		BIT(1)
 #define PCIE_LPCR_HOST_OWN_SYNC		BIT(2)
 
-/* MCU Software Control Registers */
-#define MCU_SW_CR_BASE			0x7C05B100
-#define MT6639_EMI_SIZE_ADDR		(MCU_SW_CR_BASE + 0x01E0)
-#define MT6639_MCIF_MD_STATE_ADDR	(MCU_SW_CR_BASE + 0x01E8)
-
-/* ConnInfra wakeup register */
-#define CONN_HOST_CSR_TOP_CONN_INFRA_WAKEPU_TOP_ADDR	0x7C060000
-
-/* ROM code ready status */
-#define WF_TOP_CFG_ON_ROMCODE_INDEX_ADDR	0x7C00124C
-#define ROM_CODE_READY_VALUE		0x1D1E
-
-/* PCIe2AP Remap for semaphore access */
-#define CONN_INFRA_BUS_CR_PCIE2AP_REMAP_WF_0_54_ADDR	0x7C00F054
-
-/* WFDMA registers (same as MT7925 but may have different offsets) */
-#define MT_WFDMA0_BASE			0xD4000
-#define MT_WFDMA0_GLO_CFG		(MT_WFDMA0_BASE + 0x208)
-#define MT_WFDMA0_HOST_INT_ENA		(MT_WFDMA0_BASE + 0x204)
-#define MT_WFDMA0_HOST_INT_STA		(MT_WFDMA0_BASE + 0x200)
-
-/* WFDMA Global Config bits */
-#define MT_WFDMA0_GLO_CFG_TX_DMA_EN	BIT(0)
-#define MT_WFDMA0_GLO_CFG_RX_DMA_EN	BIT(2)
-#define MT_WFDMA0_GLO_CFG_OMIT_TX_INFO	BIT(28)
-#define MT_WFDMA0_GLO_CFG_OMIT_RX_INFO	BIT(27)
-
-/* HIF Remap register for accessing high addresses (dynamic remap) */
-#define MT_HIF_REMAP_L1			0x155024    /* MT7925 remap register */
-#define MT_HIF_REMAP_L1_MASK		GENMASK(31, 16)
-#define MT_HIF_REMAP_L1_OFFSET		GENMASK(15, 0)
-#define MT_HIF_REMAP_BASE		0x130000    /* MT7925 remap base */
-#define MT_HIF_REMAP_SIZE		0x10000
-
 /*
  * MT7925/MT7927 Fixed Map - addresses are statically mapped in BAR0
- * From kernel mt7925 driver: { phys, maps, size }
  */
 #define FIXED_MAP_CONN_INFRA_HOST	0x0e0000    /* 0x7c060000 -> 0xe0000 */
 #define FIXED_MAP_CONN_INFRA		0x0f0000    /* 0x7c000000 -> 0xf0000 */
 #define FIXED_MAP_WFDMA			0x0d0000    /* 0x7c020000 -> 0xd0000 */
-#define FIXED_MAP_WF_MCU_BUS		0x000000    /* 0x830c0000 -> 0x0 */
 #define FIXED_MAP_WF_TOP_MISC_ON	0x0c0000    /* 0x81020000 -> 0xc0000 */
-#define FIXED_MAP_WFSYS_ON		0x0ae000    /* 0x820b0000 -> 0xae000 */
 
-/*
- * Direct BAR0 offsets for key registers (using fixed map):
- * MT_CONN_ON_LPCTL (0x7c060010) -> 0xe0000 + 0x10 = 0xe0010
- * MT_CONN_ON_MISC (0x7c0600f0) -> 0xe0000 + 0xf0 = 0xe00f0
- */
+/* Direct BAR0 offsets for key registers */
 #define CONN_INFRA_HOST_BAR_OFS		0x0e0000
 #define MT_LPCTL_BAR_OFS		(CONN_INFRA_HOST_BAR_OFS + 0x10)   /* 0xe0010 */
 #define MT_CONN_MISC_BAR_OFS		(CONN_INFRA_HOST_BAR_OFS + 0xf0)  /* 0xe00f0 */
 
-/*
- * WFSYS Reset Register - CRITICAL for bringing up MT7927
- * Physical: 0x7c000140 -> Via fixed map CONN_INFRA (0xf0000) + 0x140 = 0xf0140
- */
+/* WFSYS Reset Register */
 #define MT_WFSYS_RST_BAR_OFS		(FIXED_MAP_CONN_INFRA + 0x140)    /* 0xf0140 */
 #define WFSYS_SW_RST_B			BIT(0)
 #define WFSYS_SW_INIT_DONE		BIT(4)
+
+/* HIF Remap register */
+#define MT_HIF_REMAP_L1			0x155024
+#define MT_HIF_REMAP_L1_MASK		GENMASK(31, 16)
+#define MT_HIF_REMAP_L1_OFFSET		GENMASK(15, 0)
+#define MT_HIF_REMAP_BASE		0x130000
+#define MT_HIF_REMAP_SIZE		0x10000
 
 /* Chip ID registers */
 #define CONNAC3X_TOP_HCR		0x88000000
 #define CONNAC3X_TOP_HVR		0x88000004
 
-/* Patch start address for MT6639 */
-#define MT6639_PATCH_START_ADDR		0x00900000
-#define MT6639_REMAP_BASE_ADDR		0x7C500000
-#define MT6639_PCIE2AP_REMAP_BASE_ADDR	0x60000
+/* =============================================================================
+ * WFDMA Register Definitions (Critical for DMA)
+ * =============================================================================
+ */
+
+#define MT_WFDMA0_BASE			0xD4000
+
+/* Global Config */
+#define MT_WFDMA0_GLO_CFG		(MT_WFDMA0_BASE + 0x208)
+#define MT_WFDMA0_GLO_CFG_TX_DMA_EN	BIT(0)
+#define MT_WFDMA0_GLO_CFG_TX_DMA_BUSY	BIT(1)
+#define MT_WFDMA0_GLO_CFG_RX_DMA_EN	BIT(2)
+#define MT_WFDMA0_GLO_CFG_RX_DMA_BUSY	BIT(3)
+#define MT_WFDMA0_GLO_CFG_TX_WB_DDONE	BIT(6)
+#define MT_WFDMA0_GLO_CFG_FIFO_LITTLE_ENDIAN	BIT(12)
+#define MT_WFDMA0_GLO_CFG_CSR_DISP_BASE_PTR_CHAIN_EN	BIT(15)
+#define MT_WFDMA0_GLO_CFG_OMIT_RX_INFO_PFET2	BIT(21)
+#define MT_WFDMA0_GLO_CFG_OMIT_RX_INFO	BIT(27)
+#define MT_WFDMA0_GLO_CFG_OMIT_TX_INFO	BIT(28)
+#define MT_WFDMA0_GLO_CFG_CLK_GAT_DIS	BIT(30)
+
+/* Extended Config */
+#define MT_WFDMA0_GLO_CFG_EXT0		(MT_WFDMA0_BASE + 0x2b0)
+#define MT_WFDMA0_GLO_CFG_EXT0_TX_DMASHDL_EN	BIT(16)
+
+/* DMA Reset */
+#define MT_WFDMA0_RST			(MT_WFDMA0_BASE + 0x100)
+#define MT_WFDMA0_RST_LOGIC_RST		BIT(4)
+#define MT_WFDMA0_RST_DMASHDL_ALL_RST	BIT(5)
+
+/* Pointer Resets */
+#define MT_WFDMA0_RST_DTX_PTR		(MT_WFDMA0_BASE + 0x228)
+#define MT_WFDMA0_RST_DRX_PTR		(MT_WFDMA0_BASE + 0x260)
+
+/* Delay Interrupt Config */
+#define MT_WFDMA0_PRI_DLY_INT_CFG0	(MT_WFDMA0_BASE + 0x238)
+
+/* Interrupt registers */
+#define MT_WFDMA0_HOST_INT_STA		(MT_WFDMA0_BASE + 0x200)
+#define MT_WFDMA0_HOST_INT_ENA		(MT_WFDMA0_BASE + 0x204)
 
 /* MCU Command Register */
 #define MT_MCU_CMD			(MT_WFDMA0_BASE + 0x1F0)
+#define MT_MCU_CMD_WAKE_RX_PCIE		BIT(0)
 #define MT_MCU_CMD_STOP_DMA		BIT(2)
 #define MT_MCU_CMD_RESET_DONE		BIT(3)
+#define MT_MCU_CMD_RECOVERY_DONE	BIT(4)
+#define MT_MCU_CMD_NORMAL_STATE		BIT(5)
+
+/* TX Ring Registers - base + (ring_idx * 0x10) */
+#define MT_TX_RING_BASE			(MT_WFDMA0_BASE + 0x300)
+#define MT_TX_RING_SIZE			0x10
+
+/* Ring register offsets */
+#define MT_RING_BASE			0x00	/* Base address (low) */
+#define MT_RING_CNT			0x04	/* Ring size */
+#define MT_RING_CIDX			0x08	/* CPU index */
+#define MT_RING_DIDX			0x0c	/* DMA index */
+
+/* RX Ring Registers */
+#define MT_RX_RING_BASE			(MT_WFDMA0_BASE + 0x500)
+#define MT_RX_RING_SIZE			0x10
+
+/* DMASHDL bypass */
+#define MT_DMASHDL_SW_CONTROL		0x7c026004   /* Physical address */
+#define FIXED_MAP_DMASHDL		0x0d6000     /* 0x7c026000 -> 0xd6000 */
+#define MT_DMASHDL_SW_CONTROL_OFS	(FIXED_MAP_DMASHDL + 0x04)
+#define MT_DMASHDL_BYPASS		BIT(0)
+
+/* Ring indices */
+#define MT_TX_RING_DATA0		0	/* TX Data Band 0 */
+#define MT_TX_RING_MCU_WM		15	/* MCU Command (WM) */
+#define MT_TX_RING_FWDL		16	/* Firmware Download */
+
+#define MT_RX_RING_MCU			0	/* RX MCU Events */
+#define MT_RX_RING_DATA			2	/* RX Data */
+
+/* Ring sizes */
+#define MT_TX_RING_SIZE_DATA		2048
+#define MT_TX_RING_SIZE_MCU		256
+#define MT_TX_RING_SIZE_FWDL		128
+#define MT_RX_RING_SIZE_MCU		512
+#define MT_RX_RING_SIZE_DATA		1536
+
+/* DMA Descriptor */
+struct mt76_desc {
+	__le32 buf0;	/* Buffer physical address */
+	__le32 ctrl;	/* Control: length, flags */
+	__le32 buf1;	/* Buffer 1 for scatter-gather */
+	__le32 info;	/* Additional info */
+} __packed __aligned(4);
+
+#define MT_DMA_CTL_SD_LEN0		GENMASK(15, 0)
+#define MT_DMA_CTL_LAST_SEC0		BIT(16)
+#define MT_DMA_CTL_BURST		BIT(17)
+#define MT_DMA_CTL_DMA_DONE		BIT(31)
 
 /* Firmware paths */
-#define MT6639_FIRMWARE_PATCH		"mediatek/mt7925/WIFI_MT6639_PATCH_MCU_2_1_hdr.bin"
-#define MT6639_FIRMWARE_RAM		"mediatek/mt7925/WIFI_RAM_CODE_MT6639_2_1.bin"
+#define MT6639_FIRMWARE_PATCH	"mediatek/mt7925/WIFI_MT7925_PATCH_MCU_1_1_hdr.bin"
+#define MT6639_FIRMWARE_RAM	"mediatek/mt7925/WIFI_RAM_CODE_MT7925_1_1.bin"
 
 /* Timeouts */
-#define POLL_TIMEOUT_US			1000000	/* 1 second */
+#define POLL_TIMEOUT_US			1000000
 #define CONNINFRA_WAKEUP_TIMEOUT_MS	50
-#define ROM_READY_TIMEOUT_MS		500
 #define DRV_OWN_TIMEOUT_MS		500
+#define DMA_BUSY_TIMEOUT_MS		100
 
 /* =============================================================================
  * Device Structure
  * =============================================================================
  */
+
+struct mt7927_ring {
+	struct mt76_desc *desc;		/* Descriptor ring virtual address */
+	dma_addr_t desc_dma;		/* Descriptor ring DMA address */
+	int size;			/* Number of descriptors */
+	int idx;			/* Current index */
+	bool allocated;
+};
 
 struct mt7927_dev {
 	struct pci_dev *pdev;
@@ -177,9 +227,12 @@ struct mt7927_dev {
 	u32 chip_rev;
 	u32 conninfra_version;
 
-	bool aspm_supported;
 	bool conninfra_ready;
-	bool rom_ready;
+	bool dma_ready;
+
+	/* DMA rings */
+	struct mt7927_ring tx_ring[32];
+	struct mt7927_ring rx_ring[8];
 };
 
 /* =============================================================================
@@ -205,157 +258,309 @@ static inline void mt7927_wr(struct mt7927_dev *dev, u32 offset, u32 val)
 	writel(val, dev->regs + offset);
 }
 
-/*
- * Remapped register access for high addresses (0x7cxxxxxx, 0x18xxxxxx, etc.)
- * Uses HIF_REMAP_L1 to access addresses outside direct BAR0 range.
- */
+static inline void mt7927_set(struct mt7927_dev *dev, u32 offset, u32 bits)
+{
+	u32 val = mt7927_rr(dev, offset);
+	mt7927_wr(dev, offset, val | bits);
+}
+
+static inline void mt7927_clear(struct mt7927_dev *dev, u32 offset, u32 bits)
+{
+	u32 val = mt7927_rr(dev, offset);
+	mt7927_wr(dev, offset, val & ~bits);
+}
+
 static u32 mt7927_rr_remap(struct mt7927_dev *dev, u32 addr)
 {
 	u32 remap_addr, offset, val;
 
-	/* Calculate remap base and offset */
 	remap_addr = (addr & MT_HIF_REMAP_L1_MASK) >> 16;
 	offset = addr & MT_HIF_REMAP_L1_OFFSET;
 
-	/* Set remap register */
 	mt7927_wr(dev, MT_HIF_REMAP_L1, remap_addr);
-
-	/* Small delay for remap to take effect */
 	udelay(1);
-
-	/* Read from remapped window */
 	val = mt7927_rr(dev, MT_HIF_REMAP_BASE + offset);
 
 	return val;
 }
 
-static void mt7927_wr_remap(struct mt7927_dev *dev, u32 addr, u32 val)
+/* =============================================================================
+ * DMA Ring Management
+ * =============================================================================
+ */
+
+static int mt7927_ring_alloc(struct mt7927_dev *dev, struct mt7927_ring *ring, int size)
 {
-	u32 remap_addr, offset;
+	ring->size = size;
+	ring->idx = 0;
 
-	remap_addr = (addr & MT_HIF_REMAP_L1_MASK) >> 16;
-	offset = addr & MT_HIF_REMAP_L1_OFFSET;
-
-	mt7927_wr(dev, MT_HIF_REMAP_L1, remap_addr);
-	udelay(1);
-	mt7927_wr(dev, MT_HIF_REMAP_BASE + offset, val);
-}
-
-static bool mt7927_poll_remap(struct mt7927_dev *dev, u32 addr, u32 mask,
-			      u32 expect, int timeout_ms)
-{
-	int i;
-	u32 val;
-
-	for (i = 0; i < timeout_ms; i++) {
-		val = mt7927_rr_remap(dev, addr);
-		if ((val & mask) == expect)
-			return true;
-		usleep_range(1000, 1500);
+	ring->desc = dma_alloc_coherent(&dev->pdev->dev,
+					size * sizeof(struct mt76_desc),
+					&ring->desc_dma, GFP_KERNEL);
+	if (!ring->desc) {
+		dev_err(&dev->pdev->dev, "Failed to allocate DMA ring (size=%d)\n", size);
+		return -ENOMEM;
 	}
 
-	return false;
+	memset(ring->desc, 0, size * sizeof(struct mt76_desc));
+	ring->allocated = true;
+
+	dev_info(&dev->pdev->dev, "  Ring allocated: size=%d, dma=0x%llx\n",
+		 size, (unsigned long long)ring->desc_dma);
+
+	return 0;
+}
+
+static void mt7927_ring_free(struct mt7927_dev *dev, struct mt7927_ring *ring)
+{
+	if (ring->allocated && ring->desc) {
+		dma_free_coherent(&dev->pdev->dev,
+				  ring->size * sizeof(struct mt76_desc),
+				  ring->desc, ring->desc_dma);
+		ring->desc = NULL;
+		ring->allocated = false;
+	}
+}
+
+static void mt7927_ring_setup(struct mt7927_dev *dev, u32 base_reg,
+			      struct mt7927_ring *ring)
+{
+	/* Write ring base address (low 32 bits) */
+	mt7927_wr(dev, base_reg + MT_RING_BASE, ring->desc_dma);
+
+	/* Write ring size */
+	mt7927_wr(dev, base_reg + MT_RING_CNT, ring->size);
+
+	/* Reset CPU index */
+	mt7927_wr(dev, base_reg + MT_RING_CIDX, 0);
+
+	dev_info(&dev->pdev->dev, "  Ring setup at 0x%x: base=0x%llx, cnt=%d\n",
+		 base_reg, (unsigned long long)ring->desc_dma, ring->size);
 }
 
 /* =============================================================================
- * ConnInfra Initialization - CRITICAL FOR MT6639/MT7927
+ * DMA Initialization - Full Sequence
  * =============================================================================
  */
 
 /*
- * Dump key registers using fixed map offsets to see what chip responds
+ * Phase A: Disable DMA and perform force reset
  */
-static void mt7927_dump_fixed_map_regs(struct mt7927_dev *dev)
+static int mt7927_dma_disable(struct mt7927_dev *dev)
 {
-	dev_info(&dev->pdev->dev, "[DUMP] Checking registers via fixed map offsets:\n");
+	u32 val;
+	int i;
 
-	/* WFDMA area */
-	dev_info(&dev->pdev->dev, "  [0x%06x] WFDMA0 GLO_CFG: 0x%08x\n",
-		 0xd4208, mt7927_rr(dev, 0xd4208));
+	dev_info(&dev->pdev->dev, "[DMA] Phase A: Disabling DMA...\n");
 
-	/* Fixed map: CONN_INFRA_HOST (0x7c060000 -> 0xe0000) */
-	dev_info(&dev->pdev->dev, "  [0x%06x] LPCTL: 0x%08x\n",
-		 MT_LPCTL_BAR_OFS, mt7927_rr(dev, MT_LPCTL_BAR_OFS));
-	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_MISC: 0x%08x\n",
-		 MT_CONN_MISC_BAR_OFS, mt7927_rr(dev, MT_CONN_MISC_BAR_OFS));
+	/* Read current state */
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG before disable: 0x%08x\n", val);
 
-	/* Fixed map: CONN_INFRA (0x7c000000 -> 0xf0000) */
-	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_INFRA: 0x%08x\n",
-		 FIXED_MAP_CONN_INFRA, mt7927_rr(dev, FIXED_MAP_CONN_INFRA));
-	dev_info(&dev->pdev->dev, "  [0x%06x] WFSYS_RST: 0x%08x\n",
-		 MT_WFSYS_RST_BAR_OFS, mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS));
+	/* Clear DMA enable bits */
+	mt7927_clear(dev, MT_WFDMA0_GLO_CFG,
+		     MT_WFDMA0_GLO_CFG_TX_DMA_EN |
+		     MT_WFDMA0_GLO_CFG_RX_DMA_EN |
+		     MT_WFDMA0_GLO_CFG_FIFO_LITTLE_ENDIAN |
+		     MT_WFDMA0_GLO_CFG_OMIT_RX_INFO_PFET2 |
+		     MT_WFDMA0_GLO_CFG_OMIT_RX_INFO |
+		     MT_WFDMA0_GLO_CFG_OMIT_TX_INFO);
 
-	/* Try to find ROM status - scan CONN_INFRA area */
-	/* 0x7c00124c should map to 0xf0000 + 0x124c = 0xf124c */
-	dev_info(&dev->pdev->dev, "  [0x%06x] ROM_INDEX (0x7c00124c): 0x%08x\n",
-		 0xf124c, mt7927_rr(dev, 0xf124c));
+	/* Poll for TX/RX DMA busy flags to clear */
+	for (i = 0; i < DMA_BUSY_TIMEOUT_MS; i++) {
+		val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+		if (!(val & (MT_WFDMA0_GLO_CFG_TX_DMA_BUSY | MT_WFDMA0_GLO_CFG_RX_DMA_BUSY))) {
+			dev_info(&dev->pdev->dev, "[DMA] DMA idle: 0x%08x\n", val);
+			break;
+		}
+		msleep(1);
+	}
 
-	/* Try alternate ROM locations used by Gen4m */
-	dev_info(&dev->pdev->dev, "  [0x%06x] ALT ROM (0xf0100): 0x%08x\n",
-		 0xf0100, mt7927_rr(dev, 0xf0100));
-	dev_info(&dev->pdev->dev, "  [0x%06x] ALT ROM (0xf0200): 0x%08x\n",
-		 0xf0200, mt7927_rr(dev, 0xf0200));
+	if (i >= DMA_BUSY_TIMEOUT_MS) {
+		dev_warn(&dev->pdev->dev, "[DMA] Warning: DMA still busy: 0x%08x\n", val);
+	}
 
-	/* Fixed map: WF_TOP_MISC_ON (0x81020000 -> 0xc0000) */
-	dev_info(&dev->pdev->dev, "  [0x%06x] WF_TOP_MISC_ON: 0x%08x\n",
-		 FIXED_MAP_WF_TOP_MISC_ON, mt7927_rr(dev, FIXED_MAP_WF_TOP_MISC_ON));
-	/* 0x810200f0 -> 0xc00f0 might have firmware status */
-	dev_info(&dev->pdev->dev, "  [0x%06x] WF_TOP_MISC+f0: 0x%08x\n",
-		 0xc00f0, mt7927_rr(dev, 0xc00f0));
+	/* Disable DMASHDL */
+	dev_info(&dev->pdev->dev, "[DMA] Disabling DMASHDL...\n");
+	mt7927_clear(dev, MT_WFDMA0_GLO_CFG_EXT0, MT_WFDMA0_GLO_CFG_EXT0_TX_DMASHDL_EN);
 
-	/* Check MCU mailbox area */
-	dev_info(&dev->pdev->dev, "  [0x%06x] MCU_MBOX_0: 0x%08x\n",
-		 0x711c, mt7927_rr(dev, 0x711c));
-	dev_info(&dev->pdev->dev, "  [0x%06x] MCU_MBOX_1: 0x%08x\n",
-		 0x7120, mt7927_rr(dev, 0x7120));
+	/* Enable DMASHDL bypass via fixed map */
+	val = mt7927_rr(dev, MT_DMASHDL_SW_CONTROL_OFS);
+	dev_info(&dev->pdev->dev, "[DMA] DMASHDL_SW_CONTROL before: 0x%08x\n", val);
+	mt7927_set(dev, MT_DMASHDL_SW_CONTROL_OFS, MT_DMASHDL_BYPASS);
+	val = mt7927_rr(dev, MT_DMASHDL_SW_CONTROL_OFS);
+	dev_info(&dev->pdev->dev, "[DMA] DMASHDL_SW_CONTROL after: 0x%08x\n", val);
+
+	/* Force reset sequence: clear-set-clear */
+	dev_info(&dev->pdev->dev, "[DMA] Force reset sequence...\n");
+	mt7927_clear(dev, MT_WFDMA0_RST, MT_WFDMA0_RST_LOGIC_RST | MT_WFDMA0_RST_DMASHDL_ALL_RST);
+	msleep(1);
+	mt7927_set(dev, MT_WFDMA0_RST, MT_WFDMA0_RST_LOGIC_RST | MT_WFDMA0_RST_DMASHDL_ALL_RST);
+	msleep(1);
+	mt7927_clear(dev, MT_WFDMA0_RST, MT_WFDMA0_RST_LOGIC_RST | MT_WFDMA0_RST_DMASHDL_ALL_RST);
+
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG after reset: 0x%08x\n", val);
+
+	return 0;
 }
 
 /*
- * WFSYS Reset Sequence - THE KEY STEP
- * This must be performed to make registers readable/writable.
- *
- * From MT7925 kernel driver and technical reference:
- * 1. Assert reset (clear BIT 0)
- * 2. Wait 50ms
- * 3. Deassert reset (set BIT 0)
- * 4. Poll for INIT_DONE (BIT 4)
+ * Phase B: Allocate and setup DMA rings
  */
+static int mt7927_dma_rings_init(struct mt7927_dev *dev)
+{
+	int ret;
+
+	dev_info(&dev->pdev->dev, "[DMA] Phase B: Allocating DMA rings...\n");
+
+	/* Allocate TX rings */
+	dev_info(&dev->pdev->dev, "[DMA] TX Ring 16 (FWDL):\n");
+	ret = mt7927_ring_alloc(dev, &dev->tx_ring[MT_TX_RING_FWDL], MT_TX_RING_SIZE_FWDL);
+	if (ret)
+		return ret;
+	mt7927_ring_setup(dev, MT_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE,
+			  &dev->tx_ring[MT_TX_RING_FWDL]);
+
+	dev_info(&dev->pdev->dev, "[DMA] TX Ring 15 (MCU WM):\n");
+	ret = mt7927_ring_alloc(dev, &dev->tx_ring[MT_TX_RING_MCU_WM], MT_TX_RING_SIZE_MCU);
+	if (ret)
+		return ret;
+	mt7927_ring_setup(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE,
+			  &dev->tx_ring[MT_TX_RING_MCU_WM]);
+
+	/* Allocate RX ring for MCU events */
+	dev_info(&dev->pdev->dev, "[DMA] RX Ring 0 (MCU Events):\n");
+	ret = mt7927_ring_alloc(dev, &dev->rx_ring[MT_RX_RING_MCU], MT_RX_RING_SIZE_MCU);
+	if (ret)
+		return ret;
+	mt7927_ring_setup(dev, MT_RX_RING_BASE + MT_RX_RING_MCU * MT_RX_RING_SIZE,
+			  &dev->rx_ring[MT_RX_RING_MCU]);
+
+	return 0;
+}
+
+/*
+ * Phase C: Enable DMA with proper configuration
+ */
+static int mt7927_dma_enable(struct mt7927_dev *dev)
+{
+	u32 val;
+
+	dev_info(&dev->pdev->dev, "[DMA] Phase C: Enabling DMA...\n");
+
+	/* Reset TX/RX pointers */
+	mt7927_wr(dev, MT_WFDMA0_RST_DTX_PTR, ~0);
+	mt7927_wr(dev, MT_WFDMA0_RST_DRX_PTR, ~0);
+
+	/* Clear delay interrupts */
+	mt7927_wr(dev, MT_WFDMA0_PRI_DLY_INT_CFG0, 0);
+
+	/* Set global config with all required bits */
+	val = MT_WFDMA0_GLO_CFG_TX_WB_DDONE |
+	      MT_WFDMA0_GLO_CFG_FIFO_LITTLE_ENDIAN |
+	      MT_WFDMA0_GLO_CFG_CSR_DISP_BASE_PTR_CHAIN_EN |
+	      MT_WFDMA0_GLO_CFG_OMIT_RX_INFO_PFET2 |
+	      MT_WFDMA0_GLO_CFG_OMIT_TX_INFO |
+	      MT_WFDMA0_GLO_CFG_CLK_GAT_DIS |
+	      (3 << 4);  /* DMA_SIZE = 3 */
+
+	mt7927_wr(dev, MT_WFDMA0_GLO_CFG, val);
+
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG after setup: 0x%08x\n", val);
+
+	/* Enable DMA engines */
+	mt7927_set(dev, MT_WFDMA0_GLO_CFG,
+		   MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN);
+
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG final: 0x%08x\n", val);
+
+	/* Verify DMA enabled */
+	if ((val & (MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN)) ==
+	    (MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN)) {
+		dev_info(&dev->pdev->dev, "[DMA] TX and RX DMA enabled successfully!\n");
+		dev->dma_ready = true;
+		return 0;
+	}
+
+	dev_warn(&dev->pdev->dev, "[DMA] DMA enable may have failed\n");
+	return -EIO;
+}
+
+/*
+ * Full DMA initialization sequence
+ */
+static int mt7927_dma_init(struct mt7927_dev *dev)
+{
+	int ret;
+
+	dev_info(&dev->pdev->dev, "\n[DMA] ========== DMA Initialization ==========\n");
+
+	ret = mt7927_dma_disable(dev);
+	if (ret)
+		return ret;
+
+	ret = mt7927_dma_rings_init(dev);
+	if (ret)
+		return ret;
+
+	ret = mt7927_dma_enable(dev);
+	if (ret)
+		return ret;
+
+	dev_info(&dev->pdev->dev, "[DMA] ========== DMA Init Complete ==========\n\n");
+
+	return 0;
+}
+
+static void mt7927_dma_cleanup(struct mt7927_dev *dev)
+{
+	int i;
+
+	/* Free TX rings */
+	for (i = 0; i < ARRAY_SIZE(dev->tx_ring); i++)
+		mt7927_ring_free(dev, &dev->tx_ring[i]);
+
+	/* Free RX rings */
+	for (i = 0; i < ARRAY_SIZE(dev->rx_ring); i++)
+		mt7927_ring_free(dev, &dev->rx_ring[i]);
+}
+
+/* =============================================================================
+ * WFSYS Reset and Power Management
+ * =============================================================================
+ */
+
 static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 {
 	u32 val;
 	int i;
 
 	dev_info(&dev->pdev->dev, "[WFSYS] Starting WiFi subsystem reset...\n");
-	dev_info(&dev->pdev->dev, "[WFSYS] Reset register at BAR0+0x%x\n", MT_WFSYS_RST_BAR_OFS);
 
-	/* Read current state */
 	val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
 	dev_info(&dev->pdev->dev, "[WFSYS] Reset reg before: 0x%08x\n", val);
 
-	/* Step 1: Assert reset (clear WFSYS_SW_RST_B bit) */
-	dev_info(&dev->pdev->dev, "[WFSYS] Asserting reset (clearing bit 0)...\n");
+	/* Assert reset */
 	val &= ~WFSYS_SW_RST_B;
 	mt7927_wr(dev, MT_WFSYS_RST_BAR_OFS, val);
 
-	/* Read back to verify */
 	val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
 	dev_info(&dev->pdev->dev, "[WFSYS] After assert: 0x%08x\n", val);
 
-	/* Step 2: MANDATORY 50ms delay */
-	dev_info(&dev->pdev->dev, "[WFSYS] Waiting 50ms for reset...\n");
+	/* MANDATORY 50ms delay */
 	msleep(50);
 
-	/* Step 3: Deassert reset (set WFSYS_SW_RST_B bit) */
-	dev_info(&dev->pdev->dev, "[WFSYS] Deasserting reset (setting bit 0)...\n");
+	/* Deassert reset */
 	val |= WFSYS_SW_RST_B;
 	mt7927_wr(dev, MT_WFSYS_RST_BAR_OFS, val);
 
-	/* Read back */
 	val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
 	dev_info(&dev->pdev->dev, "[WFSYS] After deassert: 0x%08x\n", val);
 
-	/* Step 4: Poll for INIT_DONE (bit 4) - up to 500ms */
-	dev_info(&dev->pdev->dev, "[WFSYS] Polling for INIT_DONE (bit 4)...\n");
+	/* Poll for INIT_DONE */
 	for (i = 0; i < 500; i++) {
 		val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
 
@@ -365,7 +570,7 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 		}
 
 		if (i % 50 == 0)
-			dev_info(&dev->pdev->dev, "[WFSYS] Waiting for INIT_DONE: 0x%08x (attempt %d)\n", val, i);
+			dev_info(&dev->pdev->dev, "[WFSYS] Waiting for INIT_DONE: 0x%08x\n", val);
 
 		msleep(1);
 	}
@@ -374,10 +579,6 @@ static int mt7927_wfsys_reset(struct mt7927_dev *dev)
 	return -ETIMEDOUT;
 }
 
-/*
- * Power Management Handoff - Give ownership to FW first, then take it back
- * This is required before WFSYS reset.
- */
 static int mt7927_power_handoff(struct mt7927_dev *dev)
 {
 	u32 val;
@@ -385,15 +586,12 @@ static int mt7927_power_handoff(struct mt7927_dev *dev)
 
 	dev_info(&dev->pdev->dev, "[PWR] Power management handoff sequence...\n");
 
-	/* Read current LPCTL */
 	val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
 	dev_info(&dev->pdev->dev, "[PWR] LPCTL initial: 0x%08x\n", val);
 
-	/* Step 1: Give ownership TO firmware (write SET_OWN) */
-	dev_info(&dev->pdev->dev, "[PWR] Giving ownership to firmware (SET_OWN)...\n");
+	/* Give ownership TO firmware */
 	mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_SET_OWN);
 
-	/* Poll until bit 2 (OWN_SYNC) becomes set (FW owns) */
 	for (i = 0; i < 100; i++) {
 		val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
 		if (val & PCIE_LPCR_HOST_OWN_SYNC) {
@@ -403,15 +601,12 @@ static int mt7927_power_handoff(struct mt7927_dev *dev)
 		msleep(1);
 	}
 
-	/* Longer delay after FW takes ownership - ASPM needs time */
-	dev_info(&dev->pdev->dev, "[PWR] Waiting 50ms for FW to stabilize...\n");
+	/* Wait for FW to stabilize */
 	msleep(50);
 
-	/* Step 2: Take ownership BACK for driver (write CLR_OWN) */
-	dev_info(&dev->pdev->dev, "[PWR] Taking ownership back (CLR_OWN)...\n");
+	/* Take ownership BACK */
 	mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_CLR_OWN);
 
-	/* Poll until bit 2 (OWN_SYNC) becomes clear (driver owns) - longer timeout */
 	for (i = 0; i < 500; i++) {
 		val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
 		if (!(val & PCIE_LPCR_HOST_OWN_SYNC)) {
@@ -419,7 +614,7 @@ static int mt7927_power_handoff(struct mt7927_dev *dev)
 			return 0;
 		}
 		if (i % 50 == 0)
-			dev_info(&dev->pdev->dev, "[PWR] Waiting for CLR_OWN: 0x%08x (attempt %d)\n", val, i);
+			dev_info(&dev->pdev->dev, "[PWR] Waiting for CLR_OWN: 0x%08x\n", val);
 		msleep(1);
 	}
 
@@ -427,37 +622,21 @@ static int mt7927_power_handoff(struct mt7927_dev *dev)
 	return -ETIMEDOUT;
 }
 
-/*
- * Wake up ConnInfra subsystem using FIXED MAP offsets.
- * This is the FIRST thing that must happen for Gen4m chips.
- * Without ConnInfra awake, no MCU communication is possible.
- *
- * Using fixed map: 0x7c060000 -> BAR0 offset 0xe0000
- */
 static int mt7927_conninfra_wakeup(struct mt7927_dev *dev)
 {
 	u32 val;
 	int i;
 
 	dev_info(&dev->pdev->dev, "[ConnInfra] Waking up ConnInfra subsystem...\n");
-	dev_info(&dev->pdev->dev, "[ConnInfra] Using fixed map: LPCTL at 0x%x, MISC at 0x%x\n",
-		 MT_LPCTL_BAR_OFS, MT_CONN_MISC_BAR_OFS);
 
-	/* Write to ConnInfra wakeup register (base of conn_host_csr_top) */
-	/* 0x7c060000 -> BAR0 0xe0000, write 0x1 to trigger wakeup */
+	/* Write wakeup trigger */
 	mt7927_wr(dev, CONN_INFRA_HOST_BAR_OFS, 0x1);
-
-	/* Also try writing to LPCTL to clear firmware ownership */
 	mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_CLR_OWN);
 
-	/* Poll for ConnInfra to become ready via MISC register */
+	/* Poll for ConnInfra ready */
 	for (i = 0; i < CONNINFRA_WAKEUP_TIMEOUT_MS; i++) {
 		val = mt7927_rr(dev, MT_CONN_MISC_BAR_OFS);
 
-		if (debug && (i % 10 == 0))
-			dev_info(&dev->pdev->dev, "[ConnInfra] MISC=0x%08x (attempt %d)\n", val, i);
-
-		/* Check if ConnInfra reports ready state */
 		if (val != 0 && val != 0xFFFFFFFF) {
 			dev_info(&dev->pdev->dev, "[ConnInfra] Subsystem responded: 0x%08x\n", val);
 			dev->conninfra_ready = true;
@@ -471,183 +650,25 @@ static int mt7927_conninfra_wakeup(struct mt7927_dev *dev)
 	return -ETIMEDOUT;
 }
 
-/*
- * Verify ConnInfra version ID.
- * This confirms we're talking to the right chip.
- */
-static int mt7927_conninfra_check_version(struct mt7927_dev *dev)
-{
-	u32 version;
-	int i;
-
-	dev_info(&dev->pdev->dev, "[ConnInfra] Checking version ID...\n");
-
-	for (i = 0; i < 10; i++) {
-		/* Try reading version from ConnInfra config space */
-		version = mt7927_rr_remap(dev, CONN_INFRA_CFG_BASE);
-
-		dev_info(&dev->pdev->dev, "[ConnInfra] Version read: 0x%08x (attempt %d)\n",
-			 version, i + 1);
-
-		if (version == MT6639_CONNINFRA_VERSION_ID ||
-		    version == MT6639_CONNINFRA_VERSION_ID_E2) {
-			dev_info(&dev->pdev->dev, "[ConnInfra] Version match: MT6639 %s\n",
-				 version == MT6639_CONNINFRA_VERSION_ID_E2 ? "E2" : "E1");
-			dev->conninfra_version = version;
-			return 0;
-		}
-
-		msleep(10);
-	}
-
-	/* Version doesn't match - this might still work, log warning */
-	dev_warn(&dev->pdev->dev, "[ConnInfra] Unexpected version: 0x%08x\n", version);
-	dev->conninfra_version = version;
-	return 0;  /* Continue anyway */
-}
-
 /* =============================================================================
- * ROM Bootloader Ready Check
+ * Register Dump (Diagnostic)
  * =============================================================================
  */
 
-/*
- * Wait for ROM code to be ready.
- * The ROM bootloader indicates ready state by writing 0x1D1E to a status register.
- */
-static int mt7927_wait_rom_ready(struct mt7927_dev *dev)
+static void mt7927_dump_regs(struct mt7927_dev *dev)
 {
-	u32 val;
-	int i;
+	dev_info(&dev->pdev->dev, "[DUMP] Key registers:\n");
+	dev_info(&dev->pdev->dev, "  WFDMA0 GLO_CFG: 0x%08x\n", mt7927_rr(dev, MT_WFDMA0_GLO_CFG));
+	dev_info(&dev->pdev->dev, "  LPCTL: 0x%08x\n", mt7927_rr(dev, MT_LPCTL_BAR_OFS));
+	dev_info(&dev->pdev->dev, "  CONN_MISC: 0x%08x\n", mt7927_rr(dev, MT_CONN_MISC_BAR_OFS));
+	dev_info(&dev->pdev->dev, "  WFSYS_RST: 0x%08x\n", mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS));
+	dev_info(&dev->pdev->dev, "  MCU_CMD: 0x%08x\n", mt7927_rr(dev, MT_MCU_CMD));
 
-	dev_info(&dev->pdev->dev, "[ROM] Waiting for ROM bootloader ready (expect 0x%x)...\n",
-		 ROM_CODE_READY_VALUE);
-
-	for (i = 0; i < ROM_READY_TIMEOUT_MS; i++) {
-		val = mt7927_rr_remap(dev, WF_TOP_CFG_ON_ROMCODE_INDEX_ADDR);
-
-		if (debug && (i % 50 == 0))
-			dev_info(&dev->pdev->dev, "[ROM] ROMCODE_INDEX=0x%08x (attempt %d)\n", val, i);
-
-		if (val == ROM_CODE_READY_VALUE) {
-			dev_info(&dev->pdev->dev, "[ROM] ROM bootloader ready!\n");
-			dev->rom_ready = true;
-			return 0;
-		}
-
-		msleep(1);
-	}
-
-	dev_warn(&dev->pdev->dev, "[ROM] Timeout - ROMCODE_INDEX=0x%08x (expected 0x%x)\n",
-		 val, ROM_CODE_READY_VALUE);
-	return -ETIMEDOUT;
-}
-
-/* =============================================================================
- * Driver/Firmware Ownership Handoff (Gen4m style)
- * =============================================================================
- */
-
-static int mt7927_driver_own(struct mt7927_dev *dev)
-{
-	u32 val;
-	int i;
-
-	dev_info(&dev->pdev->dev, "[OWN] Acquiring driver ownership...\n");
-	dev_info(&dev->pdev->dev, "[OWN] Using fixed map LPCTL at BAR0+0x%x\n", MT_LPCTL_BAR_OFS);
-
-	/* Read current LPCTL state using fixed map offset */
-	val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
-	dev_info(&dev->pdev->dev, "[OWN] LPCTL before: 0x%08x\n", val);
-
-	/* Clear OWN bit to acquire driver ownership using fixed map */
-	for (i = 0; i < DRV_OWN_TIMEOUT_MS; i++) {
-		mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_CLR_OWN);
-
-		/* ASPM delay */
-		usleep_range(2000, 3000);
-
-		val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
-
-		if (!(val & PCIE_LPCR_HOST_OWN_SYNC)) {
-			dev_info(&dev->pdev->dev, "[OWN] Driver ownership acquired! LPCTL=0x%08x\n", val);
-			return 0;
-		}
-
-		if (debug && (i % 100 == 0))
-			dev_info(&dev->pdev->dev, "[OWN] Still waiting... LPCTL=0x%08x\n", val);
-
-		msleep(1);
-	}
-
-	dev_err(&dev->pdev->dev, "[OWN] Failed to acquire driver ownership, LPCTL=0x%08x\n", val);
-	return -ETIMEDOUT;
-}
-
-/* =============================================================================
- * Chip Identification
- * =============================================================================
- */
-
-static void mt7927_read_chip_info(struct mt7927_dev *dev)
-{
-	u32 hw_id, hw_rev;
-
-	dev_info(&dev->pdev->dev, "[CHIP] Reading chip information...\n");
-
-	/* Try multiple chip ID register locations */
-
-	/* Method 1: Standard location for MT6639 */
-	hw_id = mt7927_rr_remap(dev, CONNAC3X_TOP_HCR);
-	hw_rev = mt7927_rr_remap(dev, CONNAC3X_TOP_HVR);
-	dev_info(&dev->pdev->dev, "[CHIP] TOP_HCR=0x%08x TOP_HVR=0x%08x\n", hw_id, hw_rev);
-
-	/* Method 2: Alternative location */
-	hw_id = mt7927_rr_remap(dev, 0x70010200);
-	hw_rev = mt7927_rr_remap(dev, 0x70010204);
-	dev_info(&dev->pdev->dev, "[CHIP] 0x70010200=0x%08x 0x70010204=0x%08x\n", hw_id, hw_rev);
-
-	/* Method 3: Host CSR mailbox (might contain chip info) */
-	hw_id = mt7927_rr(dev, HOST_CSR_MCU_SW_MAILBOX_0);
-	dev_info(&dev->pdev->dev, "[CHIP] MCU_MAILBOX_0=0x%08x\n", hw_id);
-
-	/* Store whatever we found */
-	dev->chip_id = hw_id;
-	dev->chip_rev = hw_rev;
-}
-
-/* =============================================================================
- * WFDMA Initialization
- * =============================================================================
- */
-
-static int mt7927_wfdma_init(struct mt7927_dev *dev)
-{
-	u32 val;
-
-	dev_info(&dev->pdev->dev, "[WFDMA] Initializing WFDMA...\n");
-
-	/* Read current GLO_CFG */
-	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
-	dev_info(&dev->pdev->dev, "[WFDMA] GLO_CFG before: 0x%08x\n", val);
-
-	/* Disable DMA first */
-	mt7927_wr(dev, MT_WFDMA0_GLO_CFG, 0);
-	msleep(10);
-
-	/* Clear interrupts */
-	mt7927_wr(dev, MT_WFDMA0_HOST_INT_STA, 0xFFFFFFFF);
-	mt7927_wr(dev, MT_WFDMA0_HOST_INT_ENA, 0);
-
-	/* Enable TX/RX DMA with appropriate flags */
-	val = MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN |
-	      MT_WFDMA0_GLO_CFG_OMIT_TX_INFO | MT_WFDMA0_GLO_CFG_OMIT_RX_INFO;
-	mt7927_wr(dev, MT_WFDMA0_GLO_CFG, val);
-
-	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
-	dev_info(&dev->pdev->dev, "[WFDMA] GLO_CFG after: 0x%08x\n", val);
-
-	return 0;
+	/* TX Ring 16 (FWDL) status */
+	dev_info(&dev->pdev->dev, "  TX16 CIDX: 0x%08x\n",
+		 mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_TX_RING_SIZE + MT_RING_CIDX));
+	dev_info(&dev->pdev->dev, "  TX16 DIDX: 0x%08x\n",
+		 mt7927_rr(dev, MT_TX_RING_BASE + 16 * MT_TX_RING_SIZE + MT_RING_DIDX));
 }
 
 /* =============================================================================
@@ -667,7 +688,6 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_info(&pdev->dev, "# Device: %04x:%04x\n", pdev->vendor, pdev->device);
 	dev_info(&pdev->dev, "############################################\n");
 
-	/* Allocate device structure */
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
 	if (!dev)
 		return -ENOMEM;
@@ -709,87 +729,52 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_info(&pdev->dev, "  BAR0: %pR (size: 0x%llx)\n",
 		 &pdev->resource[0], (unsigned long long)dev->regs_len);
 
-	/* === Phase 1.5: Initial Register Dump (diagnostic) === */
-	dev_info(&pdev->dev, "\n=== Phase 1.5: Initial Register Dump ===\n");
-	mt7927_dump_fixed_map_regs(dev);
-
-	/* === Phase 2: Power Management Handoff (CRITICAL) === */
+	/* === Phase 2: Power Management Handoff === */
 	dev_info(&pdev->dev, "\n=== Phase 2: Power Management Handoff ===\n");
-	dev_info(&pdev->dev, "Must give ownership to FW first, then take it back\n");
 
 	ret = mt7927_power_handoff(dev);
-	if (ret) {
+	if (ret)
 		dev_warn(&pdev->dev, "Power handoff incomplete, continuing...\n");
-	}
 
-	/* === Phase 3: WFSYS Reset (THE KEY STEP) === */
+	/* === Phase 3: WFSYS Reset === */
 	dev_info(&pdev->dev, "\n=== Phase 3: WFSYS Reset ===\n");
-	dev_info(&pdev->dev, "This is required to unlock registers\n");
 
 	ret = mt7927_wfsys_reset(dev);
-	if (ret) {
+	if (ret)
 		dev_warn(&pdev->dev, "WFSYS reset incomplete, continuing...\n");
-	}
-
-	/* === Phase 3.5: Post-Reset Register Dump === */
-	dev_info(&pdev->dev, "\n=== Phase 3.5: Post-Reset Register Dump ===\n");
-	mt7927_dump_fixed_map_regs(dev);
 
 	/* === Phase 4: ConnInfra Wakeup === */
 	dev_info(&pdev->dev, "\n=== Phase 4: ConnInfra Wakeup ===\n");
 
 	ret = mt7927_conninfra_wakeup(dev);
+	if (ret)
+		dev_warn(&pdev->dev, "ConnInfra wakeup failed, continuing...\n");
+
+	/* === Phase 5: DMA Initialization === */
+	dev_info(&pdev->dev, "\n=== Phase 5: DMA Initialization ===\n");
+
+	ret = mt7927_dma_init(dev);
 	if (ret) {
-		dev_warn(&pdev->dev, "ConnInfra wakeup failed, but continuing...\n");
+		dev_err(&pdev->dev, "DMA init failed: %d\n", ret);
+		/* Continue for diagnostic purposes */
 	}
 
-	/* === Phase 5: ConnInfra Version Check === */
-	dev_info(&pdev->dev, "\n=== Phase 5: ConnInfra Version Check ===\n");
-
-	ret = mt7927_conninfra_check_version(dev);
-	if (ret) {
-		dev_warn(&pdev->dev, "Version check failed, but continuing...\n");
-	}
-
-	/* === Phase 6: Wait for ROM Ready === */
-	dev_info(&pdev->dev, "\n=== Phase 6: ROM Bootloader Ready Check ===\n");
-
-	ret = mt7927_wait_rom_ready(dev);
-	if (ret) {
-		dev_warn(&pdev->dev, "ROM not ready, but continuing...\n");
-	}
-
-	/* === Phase 7: Driver Ownership === */
-	dev_info(&pdev->dev, "\n=== Phase 7: Final Driver Ownership ===\n");
-
-	ret = mt7927_driver_own(dev);
-	if (ret) {
-		dev_err(&pdev->dev, "Failed to acquire driver ownership\n");
-		/* Continue for debugging */
-	}
-
-	/* === Phase 8: Chip Identification === */
-	dev_info(&pdev->dev, "\n=== Phase 8: Chip Identification ===\n");
-
-	mt7927_read_chip_info(dev);
-
-	/* === Phase 9: WFDMA Init === */
-	dev_info(&pdev->dev, "\n=== Phase 9: WFDMA Initialization ===\n");
-
-	ret = mt7927_wfdma_init(dev);
-	if (ret) {
-		dev_err(&pdev->dev, "WFDMA init failed\n");
-	}
+	/* === Phase 6: Final Register Dump === */
+	dev_info(&pdev->dev, "\n=== Phase 6: Final Status ===\n");
+	mt7927_dump_regs(dev);
 
 	/* === Summary === */
 	dev_info(&pdev->dev, "\n=== Initialization Summary ===\n");
 	dev_info(&pdev->dev, "  ConnInfra ready: %s\n", dev->conninfra_ready ? "YES" : "NO");
-	dev_info(&pdev->dev, "  ConnInfra version: 0x%08x\n", dev->conninfra_version);
-	dev_info(&pdev->dev, "  ROM ready: %s\n", dev->rom_ready ? "YES" : "NO");
-	dev_info(&pdev->dev, "  Chip ID: 0x%08x\n", dev->chip_id);
+	dev_info(&pdev->dev, "  DMA ready: %s\n", dev->dma_ready ? "YES" : "NO");
 	dev_info(&pdev->dev, "\n");
-	dev_info(&pdev->dev, "Driver probe completed (diagnostic mode)\n");
-	dev_info(&pdev->dev, "Check dmesg output for initialization status\n");
+
+	if (dev->conninfra_ready && dev->dma_ready) {
+		dev_info(&pdev->dev, "*** CHIP READY FOR FIRMWARE DOWNLOAD ***\n");
+		dev_info(&pdev->dev, "Next step: Implement firmware loading via Ring 16\n");
+	} else {
+		dev_info(&pdev->dev, "Initialization incomplete - check dmesg for details\n");
+	}
 
 	return 0;
 
@@ -804,8 +789,10 @@ static void mt7927_remove(struct pci_dev *pdev)
 
 	dev_info(&pdev->dev, "MT7927 driver unloading\n");
 
-	if (dev)
+	if (dev) {
+		mt7927_dma_cleanup(dev);
 		kfree(dev);
+	}
 }
 
 /* =============================================================================
