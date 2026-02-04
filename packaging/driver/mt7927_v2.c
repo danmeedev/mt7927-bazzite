@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.6.0
+ * MT7927 WiFi 7 Linux Driver v2.7.0
+ *
+ * v2.7.0 Changes:
+ * - Switch to MT6639 firmware (correct firmware for MT7927)
+ * - Add debug output for TX ring indices after commands
  *
  * v2.6.0 Changes:
  * - Proper firmware download protocol with TARGET_ADDRESS_LEN_REQ
@@ -19,7 +23,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.6.0"
+#define DRV_VERSION "2.7.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -126,7 +130,8 @@ struct mt76_desc {
  * =============================================================================
  */
 
-#define MT7925_FIRMWARE_RAM	"mediatek/mt7925/WIFI_RAM_CODE_MT7925_1_1.bin"
+/* MT6639 firmware for MT7927 - must be installed to /lib/firmware/mediatek/ */
+#define MT6639_FIRMWARE_RAM	"mediatek/WIFI_RAM_CODE_MT6639_2_1.bin"
 #define FW_CHUNK_SIZE		4096
 
 /* MCU packet type */
@@ -510,10 +515,11 @@ static int mt7927_conninfra_wakeup(struct mt7927_dev *dev)
 static int mt7927_wait_tx_done(struct mt7927_dev *dev, int ring_idx)
 {
 	u32 base = MT_TX_RING_BASE + ring_idx * MT_TX_RING_SIZE;
-	u32 cidx, didx;
+	u32 cidx, didx, didx_initial;
 	int i;
 
 	cidx = mt7927_rr(dev, base + MT_RING_CIDX);
+	didx_initial = mt7927_rr(dev, base + MT_RING_DIDX);
 
 	for (i = 0; i < DMA_TX_DONE_TIMEOUT_MS * 10; i++) {
 		didx = mt7927_rr(dev, base + MT_RING_DIDX);
@@ -522,8 +528,8 @@ static int mt7927_wait_tx_done(struct mt7927_dev *dev, int ring_idx)
 		usleep_range(100, 200);
 	}
 
-	dev_warn(&dev->pdev->dev, "[MCU] TX timeout ring %d: CIDX=%d DIDX=%d\n",
-		 ring_idx, cidx, didx);
+	dev_warn(&dev->pdev->dev, "[DMA] TX timeout ring %d: CIDX=%d DIDX=%d (was %d)\n",
+		 ring_idx, cidx, didx, didx_initial);
 	return -ETIMEDOUT;
 }
 
@@ -702,10 +708,10 @@ static int mt7927_load_firmware(struct mt7927_dev *dev)
 
 	dev_info(&dev->pdev->dev, "\n[FW] ========== Loading Firmware ==========\n");
 
-	ret = request_firmware(&fw, MT7925_FIRMWARE_RAM, &dev->pdev->dev);
+	ret = request_firmware(&fw, MT6639_FIRMWARE_RAM, &dev->pdev->dev);
 	if (ret) {
 		dev_err(&dev->pdev->dev, "[FW] Failed to load %s: %d\n",
-			MT7925_FIRMWARE_RAM, ret);
+			MT6639_FIRMWARE_RAM, ret);
 		return ret;
 	}
 
@@ -885,4 +891,4 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("MT7927 Linux Driver Project");
 MODULE_DESCRIPTION("MediaTek MT7927 WiFi 7 driver");
 MODULE_VERSION(DRV_VERSION);
-MODULE_FIRMWARE(MT7925_FIRMWARE_RAM);
+MODULE_FIRMWARE(MT6639_FIRMWARE_RAM);
