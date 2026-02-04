@@ -20,7 +20,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.0.0"
+#define DRV_VERSION "2.1.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -104,12 +104,32 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define MT_WFDMA0_GLO_CFG_OMIT_TX_INFO	BIT(28)
 #define MT_WFDMA0_GLO_CFG_OMIT_RX_INFO	BIT(27)
 
-/* HIF Remap register for accessing high addresses */
-#define MT_HIF_REMAP_L1			0x1008c
+/* HIF Remap register for accessing high addresses (dynamic remap) */
+#define MT_HIF_REMAP_L1			0x155024    /* MT7925 remap register */
 #define MT_HIF_REMAP_L1_MASK		GENMASK(31, 16)
 #define MT_HIF_REMAP_L1_OFFSET		GENMASK(15, 0)
-#define MT_HIF_REMAP_BASE		0xe0000
+#define MT_HIF_REMAP_BASE		0x130000    /* MT7925 remap base */
 #define MT_HIF_REMAP_SIZE		0x10000
+
+/*
+ * MT7925/MT7927 Fixed Map - addresses are statically mapped in BAR0
+ * From kernel mt7925 driver: { phys, maps, size }
+ */
+#define FIXED_MAP_CONN_INFRA_HOST	0x0e0000    /* 0x7c060000 -> 0xe0000 */
+#define FIXED_MAP_CONN_INFRA		0x0f0000    /* 0x7c000000 -> 0xf0000 */
+#define FIXED_MAP_WFDMA			0x0d0000    /* 0x7c020000 -> 0xd0000 */
+#define FIXED_MAP_WF_MCU_BUS		0x000000    /* 0x830c0000 -> 0x0 */
+#define FIXED_MAP_WF_TOP_MISC_ON	0x0c0000    /* 0x81020000 -> 0xc0000 */
+#define FIXED_MAP_WFSYS_ON		0x0ae000    /* 0x820b0000 -> 0xae000 */
+
+/*
+ * Direct BAR0 offsets for key registers (using fixed map):
+ * MT_CONN_ON_LPCTL (0x7c060010) -> 0xe0000 + 0x10 = 0xe0010
+ * MT_CONN_ON_MISC (0x7c0600f0) -> 0xe0000 + 0xf0 = 0xe00f0
+ */
+#define CONN_INFRA_HOST_BAR_OFS		0x0e0000
+#define MT_LPCTL_BAR_OFS		(CONN_INFRA_HOST_BAR_OFS + 0x10)   /* 0xe0010 */
+#define MT_CONN_MISC_BAR_OFS		(CONN_INFRA_HOST_BAR_OFS + 0xf0)  /* 0xe00f0 */
 
 /* Chip ID registers */
 #define CONNAC3X_TOP_HCR		0x88000000
@@ -235,9 +255,51 @@ static bool mt7927_poll_remap(struct mt7927_dev *dev, u32 addr, u32 mask,
  */
 
 /*
- * Wake up ConnInfra subsystem.
+ * Dump key registers using fixed map offsets to see what chip responds
+ */
+static void mt7927_dump_fixed_map_regs(struct mt7927_dev *dev)
+{
+	dev_info(&dev->pdev->dev, "[DUMP] Checking registers via fixed map offsets:\n");
+
+	/* Check if we can read anything at all */
+	dev_info(&dev->pdev->dev, "  [0x%06x] WFDMA0 base area: 0x%08x\n",
+		 0xd4000, mt7927_rr(dev, 0xd4000));
+	dev_info(&dev->pdev->dev, "  [0x%06x] WFDMA0 GLO_CFG: 0x%08x\n",
+		 0xd4208, mt7927_rr(dev, 0xd4208));
+
+	/* Fixed map: CONN_INFRA_HOST (0x7c060000 -> 0xe0000) */
+	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_INFRA_HOST base: 0x%08x\n",
+		 CONN_INFRA_HOST_BAR_OFS, mt7927_rr(dev, CONN_INFRA_HOST_BAR_OFS));
+	dev_info(&dev->pdev->dev, "  [0x%06x] LPCTL (expect power ctl): 0x%08x\n",
+		 MT_LPCTL_BAR_OFS, mt7927_rr(dev, MT_LPCTL_BAR_OFS));
+	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_MISC (expect status): 0x%08x\n",
+		 MT_CONN_MISC_BAR_OFS, mt7927_rr(dev, MT_CONN_MISC_BAR_OFS));
+
+	/* Fixed map: CONN_INFRA (0x7c000000 -> 0xf0000) */
+	dev_info(&dev->pdev->dev, "  [0x%06x] CONN_INFRA base: 0x%08x\n",
+		 FIXED_MAP_CONN_INFRA, mt7927_rr(dev, FIXED_MAP_CONN_INFRA));
+
+	/* Fixed map: WF_TOP_MISC_ON (0x81020000 -> 0xc0000) */
+	dev_info(&dev->pdev->dev, "  [0x%06x] WF_TOP_MISC_ON: 0x%08x\n",
+		 FIXED_MAP_WF_TOP_MISC_ON, mt7927_rr(dev, FIXED_MAP_WF_TOP_MISC_ON));
+
+	/* Check some lower addresses that should always work */
+	dev_info(&dev->pdev->dev, "  [0x%06x] PCIe vendor ID area: 0x%08x\n",
+		 0x0, mt7927_rr(dev, 0x0));
+	dev_info(&dev->pdev->dev, "  [0x%06x] offset 0x100: 0x%08x\n",
+		 0x100, mt7927_rr(dev, 0x100));
+	dev_info(&dev->pdev->dev, "  [0x%06x] offset 0x1000: 0x%08x\n",
+		 0x1000, mt7927_rr(dev, 0x1000));
+	dev_info(&dev->pdev->dev, "  [0x%06x] offset 0x7000: 0x%08x\n",
+		 0x7000, mt7927_rr(dev, 0x7000));
+}
+
+/*
+ * Wake up ConnInfra subsystem using FIXED MAP offsets.
  * This is the FIRST thing that must happen for Gen4m chips.
  * Without ConnInfra awake, no MCU communication is possible.
+ *
+ * Using fixed map: 0x7c060000 -> BAR0 offset 0xe0000
  */
 static int mt7927_conninfra_wakeup(struct mt7927_dev *dev)
 {
@@ -245,13 +307,19 @@ static int mt7927_conninfra_wakeup(struct mt7927_dev *dev)
 	int i;
 
 	dev_info(&dev->pdev->dev, "[ConnInfra] Waking up ConnInfra subsystem...\n");
+	dev_info(&dev->pdev->dev, "[ConnInfra] Using fixed map: LPCTL at 0x%x, MISC at 0x%x\n",
+		 MT_LPCTL_BAR_OFS, MT_CONN_MISC_BAR_OFS);
 
-	/* Write to ConnInfra wakeup register */
-	mt7927_wr_remap(dev, CONN_HOST_CSR_TOP_CONN_INFRA_WAKEPU_TOP_ADDR, 0x1);
+	/* Write to ConnInfra wakeup register (base of conn_host_csr_top) */
+	/* 0x7c060000 -> BAR0 0xe0000, write 0x1 to trigger wakeup */
+	mt7927_wr(dev, CONN_INFRA_HOST_BAR_OFS, 0x1);
 
-	/* Poll for ConnInfra to become ready */
+	/* Also try writing to LPCTL to clear firmware ownership */
+	mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_CLR_OWN);
+
+	/* Poll for ConnInfra to become ready via MISC register */
 	for (i = 0; i < CONNINFRA_WAKEUP_TIMEOUT_MS; i++) {
-		val = mt7927_rr_remap(dev, CONNAC3X_CONN_CFG_ON_MISC_ADDR);
+		val = mt7927_rr(dev, MT_CONN_MISC_BAR_OFS);
 
 		if (debug && (i % 10 == 0))
 			dev_info(&dev->pdev->dev, "[ConnInfra] MISC=0x%08x (attempt %d)\n", val, i);
@@ -353,19 +421,20 @@ static int mt7927_driver_own(struct mt7927_dev *dev)
 	int i;
 
 	dev_info(&dev->pdev->dev, "[OWN] Acquiring driver ownership...\n");
+	dev_info(&dev->pdev->dev, "[OWN] Using fixed map LPCTL at BAR0+0x%x\n", MT_LPCTL_BAR_OFS);
 
-	/* Read current LPCTL state */
-	val = mt7927_rr_remap(dev, CONNAC3X_BN0_LPCTL_ADDR);
+	/* Read current LPCTL state using fixed map offset */
+	val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
 	dev_info(&dev->pdev->dev, "[OWN] LPCTL before: 0x%08x\n", val);
 
-	/* Clear OWN bit to acquire driver ownership */
+	/* Clear OWN bit to acquire driver ownership using fixed map */
 	for (i = 0; i < DRV_OWN_TIMEOUT_MS; i++) {
-		mt7927_wr_remap(dev, CONNAC3X_BN0_LPCTL_ADDR, PCIE_LPCR_HOST_CLR_OWN);
+		mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_CLR_OWN);
 
 		/* ASPM delay */
 		usleep_range(2000, 3000);
 
-		val = mt7927_rr_remap(dev, CONNAC3X_BN0_LPCTL_ADDR);
+		val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
 
 		if (!(val & PCIE_LPCR_HOST_OWN_SYNC)) {
 			dev_info(&dev->pdev->dev, "[OWN] Driver ownership acquired! LPCTL=0x%08x\n", val);
@@ -506,6 +575,10 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev->regs_len = pci_resource_len(pdev, 0);
 	dev_info(&pdev->dev, "  BAR0: %pR (size: 0x%llx)\n",
 		 &pdev->resource[0], (unsigned long long)dev->regs_len);
+
+	/* === Phase 1.5: Register Dump (diagnostic) === */
+	dev_info(&pdev->dev, "\n=== Phase 1.5: Initial Register Dump ===\n");
+	mt7927_dump_fixed_map_regs(dev);
 
 	/* === Phase 2: ConnInfra Wakeup (CRITICAL FOR MT6639) === */
 	dev_info(&pdev->dev, "\n=== Phase 2: ConnInfra Wakeup ===\n");
