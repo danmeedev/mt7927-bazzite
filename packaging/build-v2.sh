@@ -50,12 +50,15 @@ if [ -f "Makefile" ]; then
     mv Makefile Makefile.old
 fi
 
+# Copy v2 source to mt7927.c so the module name matches
+echo "Copying mt7927_v2.c -> mt7927.c for build..."
+cp mt7927_v2.c mt7927.c
+
 # Create proper Makefile for v2
 echo "Creating v2 Makefile..."
 cat > Makefile << 'EOF'
-# MT7927 Driver v2.0 - Uses mt7927_v2.c (Gen4m architecture)
+# MT7927 Driver v2.0 - Gen4m architecture with ConnInfra
 obj-m := mt7927.o
-mt7927-y := mt7927_v2.o
 
 ccflags-y += -Wall -Wno-unused-parameter
 
@@ -64,7 +67,7 @@ KDIR ?= /lib/modules/$(KVER)/build
 PWD := $(shell pwd)
 
 all:
-	@echo "Building MT7927 v2.0 (mt7927_v2.c)..."
+	@echo "Building MT7927 v2.0 (Gen4m + ConnInfra)..."
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
@@ -74,7 +77,7 @@ clean:
 .PHONY: all clean
 EOF
 
-echo "Makefile created for mt7927_v2.c"
+echo "Makefile created"
 
 # Clean previous build
 echo "Cleaning previous build..."
