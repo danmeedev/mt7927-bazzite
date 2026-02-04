@@ -20,7 +20,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.1.0"
+#define DRV_VERSION "2.2.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -130,6 +130,14 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define CONN_INFRA_HOST_BAR_OFS		0x0e0000
 #define MT_LPCTL_BAR_OFS		(CONN_INFRA_HOST_BAR_OFS + 0x10)   /* 0xe0010 */
 #define MT_CONN_MISC_BAR_OFS		(CONN_INFRA_HOST_BAR_OFS + 0xf0)  /* 0xe00f0 */
+
+/*
+ * WFSYS Reset Register - CRITICAL for bringing up MT7927
+ * Physical: 0x7c000140 -> Via fixed map CONN_INFRA (0xf0000) + 0x140 = 0xf0140
+ */
+#define MT_WFSYS_RST_BAR_OFS		(FIXED_MAP_CONN_INFRA + 0x140)    /* 0xf0140 */
+#define WFSYS_SW_RST_B			BIT(0)
+#define WFSYS_SW_INIT_DONE		BIT(4)
 
 /* Chip ID registers */
 #define CONNAC3X_TOP_HCR		0x88000000
@@ -292,6 +300,120 @@ static void mt7927_dump_fixed_map_regs(struct mt7927_dev *dev)
 		 0x1000, mt7927_rr(dev, 0x1000));
 	dev_info(&dev->pdev->dev, "  [0x%06x] offset 0x7000: 0x%08x\n",
 		 0x7000, mt7927_rr(dev, 0x7000));
+}
+
+/*
+ * WFSYS Reset Sequence - THE KEY STEP
+ * This must be performed to make registers readable/writable.
+ *
+ * From MT7925 kernel driver and technical reference:
+ * 1. Assert reset (clear BIT 0)
+ * 2. Wait 50ms
+ * 3. Deassert reset (set BIT 0)
+ * 4. Poll for INIT_DONE (BIT 4)
+ */
+static int mt7927_wfsys_reset(struct mt7927_dev *dev)
+{
+	u32 val;
+	int i;
+
+	dev_info(&dev->pdev->dev, "[WFSYS] Starting WiFi subsystem reset...\n");
+	dev_info(&dev->pdev->dev, "[WFSYS] Reset register at BAR0+0x%x\n", MT_WFSYS_RST_BAR_OFS);
+
+	/* Read current state */
+	val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
+	dev_info(&dev->pdev->dev, "[WFSYS] Reset reg before: 0x%08x\n", val);
+
+	/* Step 1: Assert reset (clear WFSYS_SW_RST_B bit) */
+	dev_info(&dev->pdev->dev, "[WFSYS] Asserting reset (clearing bit 0)...\n");
+	val &= ~WFSYS_SW_RST_B;
+	mt7927_wr(dev, MT_WFSYS_RST_BAR_OFS, val);
+
+	/* Read back to verify */
+	val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
+	dev_info(&dev->pdev->dev, "[WFSYS] After assert: 0x%08x\n", val);
+
+	/* Step 2: MANDATORY 50ms delay */
+	dev_info(&dev->pdev->dev, "[WFSYS] Waiting 50ms for reset...\n");
+	msleep(50);
+
+	/* Step 3: Deassert reset (set WFSYS_SW_RST_B bit) */
+	dev_info(&dev->pdev->dev, "[WFSYS] Deasserting reset (setting bit 0)...\n");
+	val |= WFSYS_SW_RST_B;
+	mt7927_wr(dev, MT_WFSYS_RST_BAR_OFS, val);
+
+	/* Read back */
+	val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
+	dev_info(&dev->pdev->dev, "[WFSYS] After deassert: 0x%08x\n", val);
+
+	/* Step 4: Poll for INIT_DONE (bit 4) - up to 500ms */
+	dev_info(&dev->pdev->dev, "[WFSYS] Polling for INIT_DONE (bit 4)...\n");
+	for (i = 0; i < 500; i++) {
+		val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
+
+		if (val & WFSYS_SW_INIT_DONE) {
+			dev_info(&dev->pdev->dev, "[WFSYS] INIT_DONE! Reset reg: 0x%08x\n", val);
+			return 0;
+		}
+
+		if (i % 50 == 0)
+			dev_info(&dev->pdev->dev, "[WFSYS] Waiting for INIT_DONE: 0x%08x (attempt %d)\n", val, i);
+
+		msleep(1);
+	}
+
+	dev_warn(&dev->pdev->dev, "[WFSYS] INIT_DONE timeout - reset reg: 0x%08x\n", val);
+	return -ETIMEDOUT;
+}
+
+/*
+ * Power Management Handoff - Give ownership to FW first, then take it back
+ * This is required before WFSYS reset.
+ */
+static int mt7927_power_handoff(struct mt7927_dev *dev)
+{
+	u32 val;
+	int i;
+
+	dev_info(&dev->pdev->dev, "[PWR] Power management handoff sequence...\n");
+
+	/* Read current LPCTL */
+	val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
+	dev_info(&dev->pdev->dev, "[PWR] LPCTL initial: 0x%08x\n", val);
+
+	/* Step 1: Give ownership TO firmware (write SET_OWN) */
+	dev_info(&dev->pdev->dev, "[PWR] Giving ownership to firmware (SET_OWN)...\n");
+	mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_SET_OWN);
+
+	/* Poll until bit 2 (OWN_SYNC) becomes set (FW owns) */
+	for (i = 0; i < 100; i++) {
+		val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
+		if (val & PCIE_LPCR_HOST_OWN_SYNC) {
+			dev_info(&dev->pdev->dev, "[PWR] FW ownership confirmed: 0x%08x\n", val);
+			break;
+		}
+		msleep(1);
+	}
+
+	/* Small delay */
+	usleep_range(2000, 3000);
+
+	/* Step 2: Take ownership BACK for driver (write CLR_OWN) */
+	dev_info(&dev->pdev->dev, "[PWR] Taking ownership back (CLR_OWN)...\n");
+	mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_CLR_OWN);
+
+	/* Poll until bit 2 (OWN_SYNC) becomes clear (driver owns) */
+	for (i = 0; i < 100; i++) {
+		val = mt7927_rr(dev, MT_LPCTL_BAR_OFS);
+		if (!(val & PCIE_LPCR_HOST_OWN_SYNC)) {
+			dev_info(&dev->pdev->dev, "[PWR] Driver ownership acquired: 0x%08x\n", val);
+			return 0;
+		}
+		msleep(1);
+	}
+
+	dev_warn(&dev->pdev->dev, "[PWR] Ownership timeout - LPCTL: 0x%08x\n", val);
+	return -ETIMEDOUT;
 }
 
 /*
@@ -576,36 +698,58 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	dev_info(&pdev->dev, "  BAR0: %pR (size: 0x%llx)\n",
 		 &pdev->resource[0], (unsigned long long)dev->regs_len);
 
-	/* === Phase 1.5: Register Dump (diagnostic) === */
+	/* === Phase 1.5: Initial Register Dump (diagnostic) === */
 	dev_info(&pdev->dev, "\n=== Phase 1.5: Initial Register Dump ===\n");
 	mt7927_dump_fixed_map_regs(dev);
 
-	/* === Phase 2: ConnInfra Wakeup (CRITICAL FOR MT6639) === */
-	dev_info(&pdev->dev, "\n=== Phase 2: ConnInfra Wakeup ===\n");
+	/* === Phase 2: Power Management Handoff (CRITICAL) === */
+	dev_info(&pdev->dev, "\n=== Phase 2: Power Management Handoff ===\n");
+	dev_info(&pdev->dev, "Must give ownership to FW first, then take it back\n");
+
+	ret = mt7927_power_handoff(dev);
+	if (ret) {
+		dev_warn(&pdev->dev, "Power handoff incomplete, continuing...\n");
+	}
+
+	/* === Phase 3: WFSYS Reset (THE KEY STEP) === */
+	dev_info(&pdev->dev, "\n=== Phase 3: WFSYS Reset ===\n");
+	dev_info(&pdev->dev, "This is required to unlock registers\n");
+
+	ret = mt7927_wfsys_reset(dev);
+	if (ret) {
+		dev_warn(&pdev->dev, "WFSYS reset incomplete, continuing...\n");
+	}
+
+	/* === Phase 3.5: Post-Reset Register Dump === */
+	dev_info(&pdev->dev, "\n=== Phase 3.5: Post-Reset Register Dump ===\n");
+	mt7927_dump_fixed_map_regs(dev);
+
+	/* === Phase 4: ConnInfra Wakeup === */
+	dev_info(&pdev->dev, "\n=== Phase 4: ConnInfra Wakeup ===\n");
 
 	ret = mt7927_conninfra_wakeup(dev);
 	if (ret) {
 		dev_warn(&pdev->dev, "ConnInfra wakeup failed, but continuing...\n");
 	}
 
-	/* === Phase 3: ConnInfra Version Check === */
-	dev_info(&pdev->dev, "\n=== Phase 3: ConnInfra Version Check ===\n");
+	/* === Phase 5: ConnInfra Version Check === */
+	dev_info(&pdev->dev, "\n=== Phase 5: ConnInfra Version Check ===\n");
 
 	ret = mt7927_conninfra_check_version(dev);
 	if (ret) {
 		dev_warn(&pdev->dev, "Version check failed, but continuing...\n");
 	}
 
-	/* === Phase 4: Wait for ROM Ready === */
-	dev_info(&pdev->dev, "\n=== Phase 4: ROM Bootloader Ready Check ===\n");
+	/* === Phase 6: Wait for ROM Ready === */
+	dev_info(&pdev->dev, "\n=== Phase 6: ROM Bootloader Ready Check ===\n");
 
 	ret = mt7927_wait_rom_ready(dev);
 	if (ret) {
 		dev_warn(&pdev->dev, "ROM not ready, but continuing...\n");
 	}
 
-	/* === Phase 5: Driver Ownership === */
-	dev_info(&pdev->dev, "\n=== Phase 5: Driver Ownership ===\n");
+	/* === Phase 7: Driver Ownership === */
+	dev_info(&pdev->dev, "\n=== Phase 7: Final Driver Ownership ===\n");
 
 	ret = mt7927_driver_own(dev);
 	if (ret) {
@@ -613,13 +757,13 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		/* Continue for debugging */
 	}
 
-	/* === Phase 6: Chip Identification === */
-	dev_info(&pdev->dev, "\n=== Phase 6: Chip Identification ===\n");
+	/* === Phase 8: Chip Identification === */
+	dev_info(&pdev->dev, "\n=== Phase 8: Chip Identification ===\n");
 
 	mt7927_read_chip_info(dev);
 
-	/* === Phase 7: WFDMA Init === */
-	dev_info(&pdev->dev, "\n=== Phase 7: WFDMA Initialization ===\n");
+	/* === Phase 9: WFDMA Init === */
+	dev_info(&pdev->dev, "\n=== Phase 9: WFDMA Initialization ===\n");
 
 	ret = mt7927_wfdma_init(dev);
 	if (ret) {
