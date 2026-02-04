@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.10.0
+ * MT7927 WiFi 7 Linux Driver v2.11.0
+ *
+ * v2.11.0 Changes:
+ * - Add ROM bootloader polling for 0x1D1E ready state
+ * - WF_TOP_CFG_ON base address for ROM state checking
+ * - Proper Gen4m wake sequence before firmware loading
  *
  * v2.10.0 Changes:
  * - Add interrupt setup before DMA init (required sequence)
@@ -21,7 +26,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.10.0"
+#define DRV_VERSION "2.11.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -114,6 +119,35 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define MT_WFDMA0_HOST_INT_ENA		(MT_WFDMA0_BASE + 0x204)
 #define MT_PCIE_MAC_BASE		0x10000
 #define MT_PCIE_MAC_INT_ENABLE		(MT_PCIE_MAC_BASE + 0x188)
+
+/* =============================================================================
+ * ROM Bootloader State Registers (Gen4m/MT6639)
+ * =============================================================================
+ */
+
+/* WF_TOP_CFG_ON base - mapped via ConnInfra fixed region */
+#define WF_TOP_CFG_ON_BASE		0x184c0000
+
+/* ROM code index/state register - offset from WF_TOP_CFG_ON */
+#define WF_TOP_CFG_ON_ROMCODE_INDEX	0x604
+
+/* ROM ready value - indicates bootloader is ready to receive commands */
+#define ROM_READY_VALUE			0x1D1E
+
+/* Alternative ROM state addresses to try (Gen4m varies by chip revision) */
+#define WF_ROM_STATE_ADDR_1		0x81021604  /* Direct WF bus address */
+#define WF_ROM_STATE_ADDR_2		0x18060010  /* ConnInfra mapped */
+#define WF_ROM_STATE_ADDR_3		0x820600a4  /* Alternative offset */
+
+/* ConnInfra bus read/write control for accessing WF_TOP_CFG_ON */
+#define CONN_INFRA_WFSYS_ON_BASE	0x0f0000
+#define CONN_INFRA_WF_BUS_ADDR		(CONN_INFRA_WFSYS_ON_BASE + 0x44)
+#define CONN_INFRA_WF_BUS_DATA		(CONN_INFRA_WFSYS_ON_BASE + 0x48)
+
+/* CONN_INFRA_CFG_ON for power/clock control */
+#define CONN_INFRA_CFG_ON_BASE		0x0f0000
+#define CONN_INFRA_WAKEUP_REG		(CONN_INFRA_CFG_ON_BASE + 0x10)
+#define CONN_INFRA_SLEEP_REG		(CONN_INFRA_CFG_ON_BASE + 0x14)
 
 /* Ring indices */
 #define MT_TX_RING_MCU_WM		15
@@ -573,6 +607,117 @@ static void mt7927_irq_setup(struct mt7927_dev *dev)
 
 	val = mt7927_rr(dev, MT_PCIE_MAC_INT_ENABLE);
 	dev_info(&dev->pdev->dev, "[IRQ] PCIe MAC INT: 0x%08x\n", val);
+}
+
+/*
+ * Poll ROM bootloader state - Gen4m requires waiting for 0x1D1E
+ * The ROM needs to be ready before it can accept firmware download commands
+ */
+static int mt7927_poll_rom_state(struct mt7927_dev *dev)
+{
+	u32 val, addr_val;
+	int i;
+
+	dev_info(&dev->pdev->dev, "[ROM] Polling bootloader state...\n");
+
+	/*
+	 * Gen4m ROM state can be read from several locations depending on
+	 * how ConnInfra maps the WF subsystem. Try multiple approaches.
+	 */
+
+	/* Method 1: Check CONN_MISC register for any activity */
+	val = mt7927_rr(dev, MT_CONN_MISC_BAR_OFS);
+	dev_info(&dev->pdev->dev, "[ROM] CONN_MISC initial: 0x%08x\n", val);
+
+	/* Method 2: Try reading ROM state via ConnInfra WF bus window */
+	/* Set up bus address to read WF_TOP_CFG_ON + 0x604 */
+	mt7927_wr(dev, CONN_INFRA_WF_BUS_ADDR, WF_TOP_CFG_ON_BASE + WF_TOP_CFG_ON_ROMCODE_INDEX);
+	msleep(1);
+	addr_val = mt7927_rr(dev, CONN_INFRA_WF_BUS_DATA);
+	dev_info(&dev->pdev->dev, "[ROM] WF_TOP via bus window: 0x%08x\n", addr_val);
+
+	/* Method 3: Try direct offsets in ConnInfra fixed map region */
+	/* The ROM state may be mapped at different fixed offsets */
+
+	/* Check offset 0x604 from WF_TOP mapped area */
+	val = mt7927_rr(dev, FIXED_MAP_CONN_INFRA + 0x604);
+	dev_info(&dev->pdev->dev, "[ROM] ConnInfra+0x604: 0x%08x\n", val);
+
+	/* Check common ROM state offset 0xa4 */
+	val = mt7927_rr(dev, FIXED_MAP_CONN_INFRA + 0xa4);
+	dev_info(&dev->pdev->dev, "[ROM] ConnInfra+0xa4: 0x%08x\n", val);
+
+	/* Check offset 0x10 */
+	val = mt7927_rr(dev, FIXED_MAP_CONN_INFRA + 0x10);
+	dev_info(&dev->pdev->dev, "[ROM] ConnInfra+0x10: 0x%08x\n", val);
+
+	/* Method 4: Poll waiting for ROM ready (0x1D1E) */
+	for (i = 0; i < 100; i++) {
+		/* Try the WFSYS_ON region offset for ROM code */
+		val = mt7927_rr(dev, CONN_INFRA_WFSYS_ON_BASE + 0x604);
+		if (val == ROM_READY_VALUE) {
+			dev_info(&dev->pdev->dev, "[ROM] Ready! (0x%04x at WFSYS+0x604)\n", val);
+			return 0;
+		}
+
+		/* Also check via bus window */
+		mt7927_wr(dev, CONN_INFRA_WF_BUS_ADDR, WF_TOP_CFG_ON_BASE + WF_TOP_CFG_ON_ROMCODE_INDEX);
+		val = mt7927_rr(dev, CONN_INFRA_WF_BUS_DATA);
+		if (val == ROM_READY_VALUE) {
+			dev_info(&dev->pdev->dev, "[ROM] Ready! (0x%04x via bus)\n", val);
+			return 0;
+		}
+
+		if (i == 0 || i == 50)
+			dev_info(&dev->pdev->dev, "[ROM] Poll %d: WFSYS=0x%08x bus=0x%08x\n",
+				 i, mt7927_rr(dev, CONN_INFRA_WFSYS_ON_BASE + 0x604), val);
+
+		msleep(10);
+	}
+
+	/*
+	 * If we don't get 0x1D1E, the ROM might still be initializing or
+	 * this chip may use a different indication. Continue anyway and
+	 * see if firmware loading works.
+	 */
+	dev_warn(&dev->pdev->dev, "[ROM] Did not see 0x1D1E ready value, continuing...\n");
+	return 0;  /* Return success to continue - we'll see if FW load works */
+}
+
+/*
+ * Wake ROM bootloader via ConnInfra power management
+ * This is required before the ROM will respond to DMA commands
+ */
+static int mt7927_wake_rom(struct mt7927_dev *dev)
+{
+	u32 val;
+
+	dev_info(&dev->pdev->dev, "[ROM] Waking ROM bootloader...\n");
+
+	/* Assert wakeup request via ConnInfra */
+	mt7927_wr(dev, CONN_INFRA_WAKEUP_REG, 0x1);
+	msleep(5);
+
+	/* Check wakeup acknowledgement */
+	val = mt7927_rr(dev, CONN_INFRA_WAKEUP_REG);
+	dev_info(&dev->pdev->dev, "[ROM] Wakeup reg after assert: 0x%08x\n", val);
+
+	/* Also write to HOST region to signal host is ready */
+	mt7927_wr(dev, CONN_INFRA_HOST_BAR_OFS + 0x4, 0x1);
+	msleep(1);
+
+	/* Try MCU command register again after ROM wake */
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[ROM] MCU_CMD after wake: 0x%08x\n", val);
+
+	/* Signal that host DMA is ready */
+	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_WAKE_RX_PCIE);
+	msleep(5);
+
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[ROM] MCU_CMD after DMA signal: 0x%08x\n", val);
+
+	return 0;
 }
 
 /* =============================================================================
@@ -1056,6 +1201,16 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* Interrupt setup MUST happen before DMA init */
 	mt7927_irq_setup(dev);
+
+	/* Poll ROM bootloader state - Gen4m requires ROM to be ready */
+	ret = mt7927_poll_rom_state(dev);
+	if (ret)
+		dev_warn(&pdev->dev, "ROM state poll issue\n");
+
+	/* Wake ROM bootloader before DMA init */
+	ret = mt7927_wake_rom(dev);
+	if (ret)
+		dev_warn(&pdev->dev, "ROM wake issue\n");
 
 	ret = mt7927_dma_init(dev);
 	if (ret) {
