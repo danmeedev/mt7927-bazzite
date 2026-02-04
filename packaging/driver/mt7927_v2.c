@@ -1,16 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.7.0
+ * MT7927 WiFi 7 Linux Driver v2.8.0
+ *
+ * v2.8.0 Changes:
+ * - Load ROM patch before main firmware (required sequence)
+ * - Implement patch semaphore protocol
+ * - Add PATCH_SEM_CONTROL, PATCH_FINISH_REQ commands
  *
  * v2.7.0 Changes:
  * - Switch to MT6639 firmware (correct firmware for MT7927)
- * - Add debug output for TX ring indices after commands
- *
- * v2.6.0 Changes:
- * - Proper firmware download protocol with TARGET_ADDRESS_LEN_REQ
- * - Parse firmware regions and load each to correct address
- * - Send FW_START_REQ after transfer
- * - MCU command via Ring 15 (WM queue)
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -23,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.7.0"
+#define DRV_VERSION "2.8.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -131,6 +129,7 @@ struct mt76_desc {
  */
 
 /* MT6639 firmware for MT7927 - must be installed to /lib/firmware/mediatek/ */
+#define MT6639_FIRMWARE_PATCH	"mediatek/WIFI_MT6639_PATCH_MCU_2_1_hdr.bin"
 #define MT6639_FIRMWARE_RAM	"mediatek/WIFI_RAM_CODE_MT6639_2_1.bin"
 #define FW_CHUNK_SIZE		4096
 
@@ -140,13 +139,28 @@ struct mt76_desc {
 /* MCU command IDs */
 #define MCU_CMD_TARGET_ADDRESS_LEN_REQ	0x01
 #define MCU_CMD_FW_START_REQ		0x02
+#define MCU_CMD_PATCH_SEM_CONTROL	0x04
+#define MCU_CMD_PATCH_START_REQ		0x05
+#define MCU_CMD_PATCH_FINISH_REQ	0x07
 #define MCU_CMD_FW_SCATTER		0xEE
+
+/* Patch semaphore operations */
+#define PATCH_SEM_GET			0x01
+#define PATCH_SEM_RELEASE		0x00
+
+/* Patch semaphore response */
+#define PATCH_NOT_DL_SEM_SUCCESS	0x02
+#define PATCH_IS_DL				0x01
+#define PATCH_NOT_DL_SEM_FAIL		0x00
 
 /* S2D index */
 #define MCU_S2D_H2N			0x00
 
 /* Download mode flags */
 #define DL_MODE_NEED_RSP		BIT(31)
+
+/* Patch loading address */
+#define MT_PATCH_ADDR			0x900000
 
 /* Firmware ready status */
 #define MT_TOP_MISC2_FW_N9_RDY		GENMASK(1, 0)
@@ -219,6 +233,20 @@ struct mt76_connac_fw_dl {
 struct mt76_connac_fw_start {
 	__le32 override;
 	__le32 option;
+} __packed;
+
+/* Patch semaphore request */
+struct mt76_connac_patch_sem {
+	__le32 op;  /* 1 = GET, 0 = RELEASE */
+} __packed;
+
+/* Patch header (at start of patch file) */
+struct mt76_connac2_patch_hdr {
+	char build_date[16];
+	char platform[4];
+	__be32 hw_ver;
+	__be32 patch_ver;
+	u8 rsv[4];
 } __packed;
 
 /* Timeouts */
@@ -590,6 +618,30 @@ static int mt7927_mcu_send_cmd(struct mt7927_dev *dev, u8 cmd,
 }
 
 /*
+ * Send PATCH_SEM_CONTROL to acquire/release patch semaphore
+ */
+static int mt7927_mcu_patch_sem(struct mt7927_dev *dev, bool get)
+{
+	struct mt76_connac_patch_sem req = {
+		.op = cpu_to_le32(get ? PATCH_SEM_GET : PATCH_SEM_RELEASE),
+	};
+
+	dev_info(&dev->pdev->dev, "[PATCH] Semaphore %s\n", get ? "GET" : "RELEASE");
+
+	return mt7927_mcu_send_cmd(dev, MCU_CMD_PATCH_SEM_CONTROL, &req, sizeof(req));
+}
+
+/*
+ * Send PATCH_FINISH_REQ to finalize patch
+ */
+static int mt7927_mcu_patch_finish(struct mt7927_dev *dev)
+{
+	dev_info(&dev->pdev->dev, "[PATCH] Finish\n");
+
+	return mt7927_mcu_send_cmd(dev, MCU_CMD_PATCH_FINISH_REQ, NULL, 0);
+}
+
+/*
  * Send TARGET_ADDRESS_LEN_REQ to set download address
  */
 static int mt7927_mcu_init_download(struct mt7927_dev *dev, u32 addr, u32 len, u32 mode)
@@ -696,7 +748,94 @@ static int mt7927_wait_fw_ready(struct mt7927_dev *dev)
 	return -ETIMEDOUT;
 }
 
-static int mt7927_load_firmware(struct mt7927_dev *dev)
+/*
+ * Load ROM patch - must be done before main firmware
+ */
+static int mt7927_load_patch(struct mt7927_dev *dev)
+{
+	const struct firmware *fw;
+	const struct mt76_connac2_patch_hdr *hdr;
+	const u8 *data;
+	size_t data_len, offset, chunk;
+	int ret;
+
+	dev_info(&dev->pdev->dev, "\n[PATCH] ========== Loading Patch ==========\n");
+
+	ret = request_firmware(&fw, MT6639_FIRMWARE_PATCH, &dev->pdev->dev);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "[PATCH] Failed to load %s: %d\n",
+			MT6639_FIRMWARE_PATCH, ret);
+		return ret;
+	}
+
+	dev_info(&dev->pdev->dev, "[PATCH] Loaded %zu bytes\n", fw->size);
+
+	if (fw->size < sizeof(*hdr)) {
+		dev_err(&dev->pdev->dev, "[PATCH] File too small\n");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	hdr = (const struct mt76_connac2_patch_hdr *)fw->data;
+	dev_info(&dev->pdev->dev, "[PATCH] Build: %.16s Platform: %.4s HW: 0x%08x\n",
+		 hdr->build_date, hdr->platform, be32_to_cpu(hdr->hw_ver));
+
+	/* Acquire patch semaphore */
+	ret = mt7927_mcu_patch_sem(dev, true);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "[PATCH] Failed to acquire semaphore: %d\n", ret);
+		goto out;
+	}
+
+	/* Patch data starts after header */
+	data = fw->data + sizeof(*hdr);
+	data_len = fw->size - sizeof(*hdr);
+
+	/* Send TARGET_ADDRESS_LEN_REQ for patch */
+	ret = mt7927_mcu_init_download(dev, MT_PATCH_ADDR, data_len, DL_MODE_NEED_RSP);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "[PATCH] Init download failed: %d\n", ret);
+		goto sem_release;
+	}
+
+	/* Transfer patch data */
+	offset = 0;
+	while (offset < data_len) {
+		chunk = min_t(size_t, FW_CHUNK_SIZE, data_len - offset);
+
+		ret = mt7927_fw_scatter(dev, data + offset, chunk);
+		if (ret) {
+			dev_err(&dev->pdev->dev, "[PATCH] Scatter failed at %zu: %d\n",
+				offset, ret);
+			goto sem_release;
+		}
+		offset += chunk;
+	}
+
+	dev_info(&dev->pdev->dev, "[PATCH] Transferred %zu bytes\n", data_len);
+
+	/* Finalize patch */
+	ret = mt7927_mcu_patch_finish(dev);
+	if (ret) {
+		dev_err(&dev->pdev->dev, "[PATCH] Finish failed: %d\n", ret);
+		goto sem_release;
+	}
+
+	dev_info(&dev->pdev->dev, "[PATCH] ========== Patch Loaded! ==========\n");
+
+sem_release:
+	/* Release semaphore (even on error) */
+	mt7927_mcu_patch_sem(dev, false);
+
+out:
+	release_firmware(fw);
+	return ret;
+}
+
+/*
+ * Load main firmware (after patch is loaded)
+ */
+static int mt7927_load_ram(struct mt7927_dev *dev)
 {
 	const struct firmware *fw;
 	const struct mt76_connac2_fw_trailer *trailer;
@@ -706,7 +845,7 @@ static int mt7927_load_firmware(struct mt7927_dev *dev)
 	int ret, i;
 	u32 addr, len, mode;
 
-	dev_info(&dev->pdev->dev, "\n[FW] ========== Loading Firmware ==========\n");
+	dev_info(&dev->pdev->dev, "\n[FW] ========== Loading Main Firmware ==========\n");
 
 	ret = request_firmware(&fw, MT6639_FIRMWARE_RAM, &dev->pdev->dev);
 	if (ret) {
@@ -784,6 +923,28 @@ static int mt7927_load_firmware(struct mt7927_dev *dev)
 out:
 	release_firmware(fw);
 	return ret;
+}
+
+/*
+ * Full firmware loading sequence: patch then RAM
+ */
+static int mt7927_load_firmware(struct mt7927_dev *dev)
+{
+	int ret;
+
+	/* Step 1: Load ROM patch */
+	ret = mt7927_load_patch(dev);
+	if (ret) {
+		dev_warn(&dev->pdev->dev, "[FW] Patch load failed, trying RAM anyway\n");
+		/* Continue - some firmware may work without patch */
+	}
+
+	/* Step 2: Load main firmware */
+	ret = mt7927_load_ram(dev);
+	if (ret)
+		return ret;
+
+	return 0;
 }
 
 /* =============================================================================
@@ -891,4 +1052,5 @@ MODULE_LICENSE("GPL");
 MODULE_AUTHOR("MT7927 Linux Driver Project");
 MODULE_DESCRIPTION("MediaTek MT7927 WiFi 7 driver");
 MODULE_VERSION(DRV_VERSION);
+MODULE_FIRMWARE(MT6639_FIRMWARE_PATCH);
 MODULE_FIRMWARE(MT6639_FIRMWARE_RAM);
