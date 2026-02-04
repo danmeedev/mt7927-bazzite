@@ -54,11 +54,14 @@ kernel_*.log
 test_results_*.txt
 
 # Firmware files (if you want to avoid committing proprietary firmware)
-*.bin
+# *.bin  # DISABLED - we need to include MT6639 firmware for MT7927
 *.fw
 /firmware/
 # Uncomment if you want to track MT7925 firmware for testing
 #!/lib/firmware/mediatek/
+
+# Include extracted MT6639 firmware for MT7927
+!firmware_for_linux/*.bin
 
 # Test outputs
 /test_output/
@@ -161,9 +164,13 @@ rpmbuild/
 !Makefile
 !Kbuild
 !tests/Kbuild
+# Windows driver files - INCLUDE for reference/extraction
+!mess/mtkwecx.inf
+!mess/mtkwlan.dat
+
+# Ignore other Windows driver binaries (large, not needed for Linux)
 mess/00052c7c-5231-4e24-ba79-936d7a516192_7b7723bee98c33d231d8ebd436a0d2308c426e34.cab
 mess/mtkihvx.dll
 mess/mtkwecx.cat
-mess/mtkwecx.inf
 mess/mtkwecx.sys
-mess/mtkwlan.dat
+mess/.env
