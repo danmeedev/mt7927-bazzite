@@ -1,14 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.8.0
+ * MT7927 WiFi 7 Linux Driver v2.9.0
+ *
+ * v2.9.0 Changes:
+ * - Use PATCH_START_REQ (0x05) instead of TARGET_ADDRESS_LEN_REQ for patch
+ * - Add MCU wake signal before DMA operations
+ * - Add diagnostic output for MCU_CMD register
  *
  * v2.8.0 Changes:
  * - Load ROM patch before main firmware (required sequence)
  * - Implement patch semaphore protocol
- * - Add PATCH_SEM_CONTROL, PATCH_FINISH_REQ commands
- *
- * v2.7.0 Changes:
- * - Switch to MT6639 firmware (correct firmware for MT7927)
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -21,7 +22,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.8.0"
+#define DRV_VERSION "2.9.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -100,6 +101,15 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define FIXED_MAP_DMASHDL		0x0d6000
 #define MT_DMASHDL_SW_CONTROL_OFS	(FIXED_MAP_DMASHDL + 0x04)
 #define MT_DMASHDL_BYPASS		BIT(0)
+
+/* MCU Command Register - for waking up MCU/ROM */
+#define MT_MCU_CMD			(MT_WFDMA0_BASE + 0x1f0)
+#define MT_MCU_CMD_WAKE_RX_PCIE		BIT(0)
+#define MT_MCU_CMD_STOP_DMA		BIT(1)
+#define MT_MCU_CMD_RESET_DONE		BIT(2)
+#define MT_MCU_CMD_RECOVERY_DONE	BIT(3)
+#define MT_MCU_CMD_NORMAL_STATE		BIT(4)
+#define MT_MCU_CMD_LMAC_DONE		BIT(5)
 
 /* Ring indices */
 #define MT_TX_RING_MCU_WM		15
@@ -432,6 +442,14 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 		dev_info(&dev->pdev->dev, "[DMA] Ready: GLO_CFG=0x%08x\n", val);
 	}
 
+	/* Wake MCU/ROM so it starts processing DMA rings */
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[MCU] CMD before wake: 0x%08x\n", val);
+	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_WAKE_RX_PCIE);
+	msleep(5);
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[MCU] CMD after wake: 0x%08x\n", val);
+
 	/* Allocate buffers */
 	dev->fw_buf = dma_alloc_coherent(&dev->pdev->dev, FW_CHUNK_SIZE + 256,
 					 &dev->fw_buf_dma, GFP_KERNEL);
@@ -642,7 +660,24 @@ static int mt7927_mcu_patch_finish(struct mt7927_dev *dev)
 }
 
 /*
- * Send TARGET_ADDRESS_LEN_REQ to set download address
+ * Send PATCH_START_REQ to initialize patch download (for address 0x900000)
+ */
+static int mt7927_mcu_patch_start(struct mt7927_dev *dev, u32 addr, u32 len, u32 mode)
+{
+	struct mt76_connac_fw_dl req = {
+		.addr = cpu_to_le32(addr),
+		.len = cpu_to_le32(len),
+		.mode = cpu_to_le32(mode),
+	};
+
+	dev_info(&dev->pdev->dev, "[PATCH] Start: addr=0x%08x len=%u mode=0x%x\n",
+		 addr, len, mode);
+
+	return mt7927_mcu_send_cmd(dev, MCU_CMD_PATCH_START_REQ, &req, sizeof(req));
+}
+
+/*
+ * Send TARGET_ADDRESS_LEN_REQ to set download address (for RAM firmware)
  */
 static int mt7927_mcu_init_download(struct mt7927_dev *dev, u32 addr, u32 len, u32 mode)
 {
@@ -791,10 +826,10 @@ static int mt7927_load_patch(struct mt7927_dev *dev)
 	data = fw->data + sizeof(*hdr);
 	data_len = fw->size - sizeof(*hdr);
 
-	/* Send TARGET_ADDRESS_LEN_REQ for patch */
-	ret = mt7927_mcu_init_download(dev, MT_PATCH_ADDR, data_len, DL_MODE_NEED_RSP);
+	/* Send PATCH_START_REQ for patch at 0x900000 */
+	ret = mt7927_mcu_patch_start(dev, MT_PATCH_ADDR, data_len, DL_MODE_NEED_RSP);
 	if (ret) {
-		dev_err(&dev->pdev->dev, "[PATCH] Init download failed: %d\n", ret);
+		dev_err(&dev->pdev->dev, "[PATCH] Start failed: %d\n", ret);
 		goto sem_release;
 	}
 
