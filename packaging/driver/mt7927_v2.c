@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.15.0
+ * MT7927 WiFi 7 Linux Driver v2.16.0
+ *
+ * v2.16.0 Changes:
+ * - CRITICAL: Ring 15 CIDX doesn't advance - Ring 15 not working!
+ * - Try sending FW_START via Ring 16 (FWDL) which does work
+ * - Add MCU WPDMA Ring 15 CIDX write (0x23F8) as alternative doorbell
+ * - Try direct MCU_CMD register trigger for FW execution
+ * - Add explicit CIDX write verification with read-back
  *
  * v2.15.0 Changes:
  * - DISCOVERY: Ring BASE reads 0 but DMA transfers actually WORK!
  * - FW regions transfer successfully via Ring 16 (FWDL)
  * - Issue: FW_START via Ring 15 (MCU) - need to verify it's processed
- * - Add Ring 15 CIDX/DIDX debug before/after FW_START command
- * - Add alternative FW ready register polling (multiple locations)
- * - Poll MCU_CMD register for changes after FW_START
- *
- * v2.14.0 Changes:
- * - CRITICAL: Try MCU WPDMA window (0x2000) instead of host WFDMA (0xD4000)
- * - Add DUMMY_CR write (BIT(1)) after DMA enable for handshake
- * - Both HOST (0xD4xxx) and MCU (0x2xxx) ring BASE reads return 0
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -26,7 +25,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.15.0"
+#define DRV_VERSION "2.16.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -967,7 +966,7 @@ static int mt7927_mcu_send_cmd(struct mt7927_dev *dev, u8 cmd,
 	struct mt7927_ring *ring = &dev->tx_ring[MT_TX_RING_MCU_WM];
 	struct mt76_connac2_mcu_txd *txd;
 	struct mt76_desc *desc;
-	u32 ctrl;
+	u32 ctrl, host_cidx_addr, mcu_cidx_addr, readback;
 	int idx;
 
 	if (!ring->allocated || !dev->cmd_buf)
@@ -1008,8 +1007,27 @@ static int mt7927_mcu_send_cmd(struct mt7927_dev *dev, u8 cmd,
 	wmb();
 
 	ring->idx = (idx + 1) % ring->size;
-	mt7927_wr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX,
-		  ring->idx);
+
+	/*
+	 * v2.16: Try BOTH Host WFDMA and MCU WPDMA CIDX writes
+	 * since Ring 15 HOST CIDX doesn't seem to advance
+	 */
+	host_cidx_addr = MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX;
+	mcu_cidx_addr = MT_MCU_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX;
+
+	/* Write to HOST CIDX (0xD43F8) */
+	mt7927_wr(dev, host_cidx_addr, ring->idx);
+	wmb();
+	readback = mt7927_rr(dev, host_cidx_addr);
+	dev_info(&dev->pdev->dev, "[MCU_CMD] Host CIDX write %d -> readback %d (addr 0x%05x)\n",
+		 ring->idx, readback, host_cidx_addr);
+
+	/* Also write to MCU WPDMA CIDX (0x23F8) */
+	mt7927_wr(dev, mcu_cidx_addr, ring->idx);
+	wmb();
+	readback = mt7927_rr(dev, mcu_cidx_addr);
+	dev_info(&dev->pdev->dev, "[MCU_CMD] MCU CIDX write %d -> readback %d (addr 0x%05x)\n",
+		 ring->idx, readback, mcu_cidx_addr);
 
 	return mt7927_wait_tx_done(dev, MT_TX_RING_MCU_WM);
 }
@@ -1073,7 +1091,91 @@ static int mt7927_mcu_init_download(struct mt7927_dev *dev, u32 addr, u32 len, u
 }
 
 /*
- * Send FW_START_REQ to start firmware execution
+ * Send FW_START via Ring 16 (FWDL) - v2.16 alternative since Ring 16 works
+ */
+static int mt7927_fw_start_via_ring16(struct mt7927_dev *dev, u32 addr)
+{
+	struct mt7927_ring *ring = &dev->tx_ring[MT_TX_RING_FWDL];
+	struct mt76_connac2_mcu_txd *txd;
+	struct mt76_desc *desc;
+	struct mt76_connac_fw_start *fw_start;
+	u32 ctrl;
+	int idx;
+
+	if (!ring->allocated || !dev->fw_buf)
+		return -EINVAL;
+
+	dev_info(&dev->pdev->dev, "[FW] Trying FW_START via Ring 16 (FWDL)...\n");
+
+	txd = (struct mt76_connac2_mcu_txd *)dev->fw_buf;
+	memset(txd, 0, sizeof(*txd));
+
+	/* Use CMD type but on FWDL queue */
+	txd->txd[0] = cpu_to_le32(
+		FIELD_PREP(MT_TXD0_TX_BYTES, sizeof(*txd) + sizeof(*fw_start)) |
+		FIELD_PREP(MT_TXD0_PKT_FMT, MT_TX_TYPE_CMD) |
+		FIELD_PREP(MT_TXD0_Q_IDX, MT_TX_MCU_PORT_RX_FWDL)
+	);
+
+	txd->len = cpu_to_le16(sizeof(*fw_start));
+	txd->cid = MCU_CMD_FW_START_REQ;
+	txd->pkt_type = MCU_PKT_ID;
+	txd->seq = dev->mcu_seq++;
+	txd->s2d_index = MCU_S2D_H2N;
+
+	/* Build FW_START payload */
+	fw_start = (struct mt76_connac_fw_start *)(dev->fw_buf + sizeof(*txd));
+	fw_start->override = cpu_to_le32(addr ? addr : 0);
+	fw_start->option = cpu_to_le32(addr ? BIT(0) : 0);
+
+	wmb();
+
+	idx = ring->idx;
+	desc = &ring->desc[idx];
+
+	desc->buf0 = cpu_to_le32(lower_32_bits(dev->fw_buf_dma));
+	ctrl = FIELD_PREP(MT_DMA_CTL_SD_LEN0, sizeof(*txd) + sizeof(*fw_start)) | MT_DMA_CTL_LAST_SEC0;
+	desc->ctrl = cpu_to_le32(ctrl);
+	desc->buf1 = cpu_to_le32(upper_32_bits(dev->fw_buf_dma));
+	desc->info = 0;
+
+	wmb();
+
+	ring->idx = (idx + 1) % ring->size;
+	mt7927_wr(dev, MT_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE + MT_RING_CIDX,
+		  ring->idx);
+
+	return mt7927_wait_tx_done(dev, MT_TX_RING_FWDL);
+}
+
+/*
+ * Try direct MCU_CMD register method to kick firmware
+ */
+static void mt7927_try_direct_fw_kick(struct mt7927_dev *dev)
+{
+	u32 val;
+
+	dev_info(&dev->pdev->dev, "[FW] Trying direct MCU_CMD register kick...\n");
+
+	/* Set various MCU_CMD bits to try to wake/kick firmware */
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[FW] MCU_CMD before: 0x%08x\n", val);
+
+	/* Try NORMAL_STATE bit - signals firmware should be running */
+	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_NORMAL_STATE);
+	msleep(10);
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[FW] MCU_CMD after NORMAL_STATE: 0x%08x\n", val);
+
+	/* Also try LMAC_DONE - indicates lower MAC ready */
+	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_LMAC_DONE);
+	msleep(10);
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[FW] MCU_CMD after LMAC_DONE: 0x%08x\n", val);
+}
+
+/*
+ * Send FW_START_REQ to start firmware execution - v2.16 with multiple methods
  */
 static int mt7927_mcu_start_firmware(struct mt7927_dev *dev, u32 addr)
 {
@@ -1088,21 +1190,28 @@ static int mt7927_mcu_start_firmware(struct mt7927_dev *dev, u32 addr)
 	cidx_before = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX);
 	didx_before = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
 
+	dev_info(&dev->pdev->dev, "\n[FW] ========== Starting Firmware ==========\n");
 	dev_info(&dev->pdev->dev, "[FW] Start firmware: addr=0x%08x\n", addr);
 	dev_info(&dev->pdev->dev, "[FW] Ring15 BEFORE: CIDX=%d DIDX=%d\n", cidx_before, didx_before);
 
+	/* Method 1: Try standard Ring 15 (MCU WM) command */
+	dev_info(&dev->pdev->dev, "[FW] Method 1: Ring 15 (MCU WM) command\n");
 	ret = mt7927_mcu_send_cmd(dev, MCU_CMD_FW_START_REQ, &req, sizeof(req));
 
-	/* Dump Ring 15 state AFTER command - CIDX should have incremented */
+	/* Dump Ring 15 state AFTER command */
 	cidx_after = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX);
 	didx_after = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
 	dev_info(&dev->pdev->dev, "[FW] Ring15 AFTER:  CIDX=%d DIDX=%d (ret=%d)\n", cidx_after, didx_after, ret);
 
 	if (cidx_after == cidx_before) {
-		dev_warn(&dev->pdev->dev, "[FW] WARNING: Ring15 CIDX didn't advance - command may not have been sent!\n");
-	}
-	if (didx_after != cidx_after) {
-		dev_warn(&dev->pdev->dev, "[FW] NOTE: Ring15 DIDX != CIDX - MCU hasn't processed command yet\n");
+		dev_warn(&dev->pdev->dev, "[FW] WARNING: Ring15 CIDX didn't advance!\n");
+
+		/* Method 2: Try sending FW_START via Ring 16 (FWDL) which works */
+		dev_info(&dev->pdev->dev, "[FW] Method 2: Ring 16 (FWDL) command\n");
+		ret = mt7927_fw_start_via_ring16(dev, addr);
+
+		/* Method 3: Try direct MCU_CMD register kick */
+		mt7927_try_direct_fw_kick(dev);
 	}
 
 	return ret;
