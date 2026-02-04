@@ -1,0 +1,72 @@
+# MT7927 WiFi 7 Driver v2.0 - Makefile
+# Uses MT6639 architecture with ConnInfra initialization
+
+DRIVER_NAME = mt7927
+DRIVER_VERSION = 2.0.0
+
+# If KERNELRELEASE is defined, we're being invoked from the kernel build system
+ifneq ($(KERNELRELEASE),)
+
+obj-m := $(DRIVER_NAME).o
+$(DRIVER_NAME)-objs := mt7927_v2.o
+
+# Compiler flags
+ccflags-y += -DCONFIG_MT7927_DEBUG
+ccflags-y += -Wall -Wextra -Wno-unused-parameter
+
+else
+
+# Normal Makefile targets
+
+KVER ?= $(shell uname -r)
+KDIR ?= /lib/modules/$(KVER)/build
+PWD := $(shell pwd)
+
+# Default target
+all: modules
+
+# Build kernel module
+modules:
+	@echo "Building MT7927 driver v$(DRIVER_VERSION) for kernel $(KVER)"
+	@echo "Using MT6639 architecture (Gen4m + ConnInfra)"
+	$(MAKE) -C $(KDIR) M=$(PWD) modules
+
+# Clean build artifacts
+clean:
+	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	rm -f *.o *.ko *.mod.c *.mod.o *.symvers *.order .*.cmd
+
+# Install module
+install: modules
+	@echo "Installing $(DRIVER_NAME).ko..."
+	sudo mkdir -p /lib/modules/$(KVER)/extra/
+	sudo cp $(DRIVER_NAME).ko /lib/modules/$(KVER)/extra/
+	sudo depmod -a $(KVER)
+	@echo "Module installed. Load with: sudo modprobe $(DRIVER_NAME)"
+
+# Uninstall module
+uninstall:
+	@echo "Uninstalling $(DRIVER_NAME)..."
+	sudo rm -f /lib/modules/$(KVER)/extra/$(DRIVER_NAME).ko
+	sudo depmod -a $(KVER)
+
+# Load module for testing
+load: modules
+	@echo "Unloading any existing driver..."
+	-sudo rmmod mt7925e 2>/dev/null || true
+	-sudo rmmod $(DRIVER_NAME) 2>/dev/null || true
+	@echo "Loading $(DRIVER_NAME).ko..."
+	sudo insmod ./$(DRIVER_NAME).ko debug=1
+	@echo "Module loaded. Check: sudo dmesg | tail -100"
+
+# Unload module
+unload:
+	-sudo rmmod $(DRIVER_NAME) 2>/dev/null || true
+
+# Show dmesg output
+dmesg:
+	sudo dmesg | grep -E "mt7927|MT7927|ConnInfra|ROM" | tail -100
+
+.PHONY: all modules clean install uninstall load unload dmesg
+
+endif
