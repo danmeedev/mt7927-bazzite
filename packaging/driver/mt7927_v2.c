@@ -1,24 +1,20 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.12.0
+ * MT7927 WiFi 7 Linux Driver v2.13.0
+ *
+ * v2.13.0 Changes:
+ * - CRITICAL FIX: Disable clock gating IMMEDIATELY after DMA reset
+ * - Add prefetch (EXT_CTRL) register configuration before ring setup
+ * - Without CLK_GAT_DIS before ring writes, BASE addresses stay 0x00000000
+ * - Add debug verification of ring BASE address writes
  *
  * v2.12.0 Changes:
  * - Add extensive register dump for debugging MCU state
  * - Dump ConnInfra, WFSYS, and WFDMA regions
- * - Try alternative DMA signaling methods
  *
  * v2.11.0 Changes:
  * - Add ROM bootloader polling for 0x1D1E ready state
  * - WF_TOP_CFG_ON base address for ROM state checking
- * - Proper Gen4m wake sequence before firmware loading
- *
- * v2.10.0 Changes:
- * - Add interrupt setup before DMA init (required sequence)
- * - Disable HOST_INT_ENA, enable PCIe MAC interrupts
- * - This makes WPDMA registers writable
- *
- * v2.9.0 Changes:
- * - Use PATCH_START_REQ for patch, add MCU wake signal
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -31,7 +27,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.12.0"
+#define DRV_VERSION "2.13.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -106,6 +102,26 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define MT_RING_CNT			0x04
 #define MT_RING_CIDX			0x08
 #define MT_RING_DIDX			0x0c
+
+/* =============================================================================
+ * Ring Prefetch (EXT_CTRL) Registers - MUST configure before ring BASE/CNT
+ * =============================================================================
+ */
+
+/* TX Ring Extended Control (prefetch config) */
+#define MT_WFDMA0_TX_RING15_EXT_CTRL	(MT_WFDMA0_BASE + 0x63c)
+#define MT_WFDMA0_TX_RING16_EXT_CTRL	(MT_WFDMA0_BASE + 0x640)
+
+/* RX Ring Extended Control */
+#define MT_WFDMA0_RX_RING0_EXT_CTRL	(MT_WFDMA0_BASE + 0x680)
+
+/* Prefetch values: (base_offset << 16) | depth
+ * These are memory offsets in the internal SRAM, not physical addresses
+ * MT7925/MT6639 specific values from kernel driver
+ */
+#define PREFETCH_TX_RING15		0x05000040  /* offset 0x500, depth 64 */
+#define PREFETCH_TX_RING16		0x05400040  /* offset 0x540, depth 64 */
+#define PREFETCH_RX_RING0		0x00000040  /* offset 0x000, depth 64 */
 
 #define FIXED_MAP_DMASHDL		0x0d6000
 #define MT_DMASHDL_SW_CONTROL_OFS	(FIXED_MAP_DMASHDL + 0x04)
@@ -404,7 +420,8 @@ static void mt7927_ring_free(struct mt7927_dev *dev, struct mt7927_ring *ring)
 static void mt7927_ring_setup(struct mt7927_dev *dev, u32 base_reg,
 			      struct mt7927_ring *ring)
 {
-	mt7927_wr(dev, base_reg + MT_RING_BASE, ring->desc_dma);
+	/* Write lower 32 bits of DMA address - this is all we need for 32-bit DMA */
+	mt7927_wr(dev, base_reg + MT_RING_BASE, lower_32_bits(ring->desc_dma));
 	mt7927_wr(dev, base_reg + MT_RING_CNT, ring->size);
 	mt7927_wr(dev, base_reg + MT_RING_CIDX, 0);
 }
@@ -416,12 +433,12 @@ static void mt7927_ring_setup(struct mt7927_dev *dev, u32 base_reg,
 
 static int mt7927_dma_init(struct mt7927_dev *dev)
 {
-	u32 val;
+	u32 val, base_reg, readback;
 	int ret, i;
 
-	dev_info(&dev->pdev->dev, "[DMA] Initializing...\n");
+	dev_info(&dev->pdev->dev, "[DMA] Initializing v2.13 (CLK_GAT fix)...\n");
 
-	/* Disable DMA */
+	/* Step 1: Disable DMA */
 	mt7927_clear(dev, MT_WFDMA0_GLO_CFG,
 		     MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN);
 
@@ -435,33 +452,84 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	mt7927_clear(dev, MT_WFDMA0_GLO_CFG_EXT0, MT_WFDMA0_GLO_CFG_EXT0_TX_DMASHDL_EN);
 	mt7927_set(dev, MT_DMASHDL_SW_CONTROL_OFS, MT_DMASHDL_BYPASS);
 
-	/* Reset */
+	/* Step 2: Reset WFDMA */
+	dev_info(&dev->pdev->dev, "[DMA] Resetting WFDMA...\n");
 	mt7927_clear(dev, MT_WFDMA0_RST, MT_WFDMA0_RST_LOGIC_RST | MT_WFDMA0_RST_DMASHDL_ALL_RST);
 	msleep(1);
 	mt7927_set(dev, MT_WFDMA0_RST, MT_WFDMA0_RST_LOGIC_RST | MT_WFDMA0_RST_DMASHDL_ALL_RST);
 	msleep(1);
 	mt7927_clear(dev, MT_WFDMA0_RST, MT_WFDMA0_RST_LOGIC_RST | MT_WFDMA0_RST_DMASHDL_ALL_RST);
 
-	/* Allocate rings */
+	/*
+	 * Step 3: CRITICAL - Disable clock gating IMMEDIATELY after reset!
+	 *
+	 * The DMA reset puts WFDMA back to defaults with clock gating ENABLED.
+	 * With clock gating enabled, ring register writes DO NOT PERSIST.
+	 * This was the root cause of BASE addresses reading back as 0x00000000.
+	 */
+	dev_info(&dev->pdev->dev, "[DMA] CRITICAL: Disabling clock gating BEFORE ring setup...\n");
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG after reset: 0x%08x (CLK_GAT_DIS=%d)\n",
+		 val, !!(val & MT_WFDMA0_GLO_CFG_CLK_GAT_DIS));
+
+	mt7927_set(dev, MT_WFDMA0_GLO_CFG, MT_WFDMA0_GLO_CFG_CLK_GAT_DIS);
+	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
+	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG after CLK_GAT_DIS: 0x%08x\n", val);
+
+	/*
+	 * Step 4: Configure prefetch (EXT_CTRL) registers BEFORE ring setup.
+	 * This tells the DMA engine where to prefetch descriptors from.
+	 */
+	dev_info(&dev->pdev->dev, "[DMA] Configuring prefetch registers...\n");
+	mt7927_wr(dev, MT_WFDMA0_TX_RING15_EXT_CTRL, PREFETCH_TX_RING15);
+	mt7927_wr(dev, MT_WFDMA0_TX_RING16_EXT_CTRL, PREFETCH_TX_RING16);
+	mt7927_wr(dev, MT_WFDMA0_RX_RING0_EXT_CTRL, PREFETCH_RX_RING0);
+
+	/* Step 5: Allocate and setup rings */
+	dev_info(&dev->pdev->dev, "[DMA] Allocating TX Ring 16 (FWDL)...\n");
 	ret = mt7927_ring_alloc(dev, &dev->tx_ring[MT_TX_RING_FWDL], MT_TX_RING_SIZE_FWDL);
 	if (ret)
 		return ret;
-	mt7927_ring_setup(dev, MT_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE,
-			  &dev->tx_ring[MT_TX_RING_FWDL]);
 
+	base_reg = MT_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE;
+	dev_info(&dev->pdev->dev, "[DMA] Ring16: Writing BASE=0x%08x to reg 0x%05x\n",
+		 lower_32_bits(dev->tx_ring[MT_TX_RING_FWDL].desc_dma), base_reg);
+	mt7927_ring_setup(dev, base_reg, &dev->tx_ring[MT_TX_RING_FWDL]);
+
+	/* Verify the write persisted */
+	readback = mt7927_rr(dev, base_reg + MT_RING_BASE);
+	dev_info(&dev->pdev->dev, "[DMA] Ring16: Readback BASE=0x%08x %s\n",
+		 readback, (readback != 0) ? "OK!" : "FAILED - still 0!");
+
+	dev_info(&dev->pdev->dev, "[DMA] Allocating TX Ring 15 (MCU)...\n");
 	ret = mt7927_ring_alloc(dev, &dev->tx_ring[MT_TX_RING_MCU_WM], MT_TX_RING_SIZE_MCU);
 	if (ret)
 		return ret;
-	mt7927_ring_setup(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE,
-			  &dev->tx_ring[MT_TX_RING_MCU_WM]);
 
+	base_reg = MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE;
+	dev_info(&dev->pdev->dev, "[DMA] Ring15: Writing BASE=0x%08x to reg 0x%05x\n",
+		 lower_32_bits(dev->tx_ring[MT_TX_RING_MCU_WM].desc_dma), base_reg);
+	mt7927_ring_setup(dev, base_reg, &dev->tx_ring[MT_TX_RING_MCU_WM]);
+
+	readback = mt7927_rr(dev, base_reg + MT_RING_BASE);
+	dev_info(&dev->pdev->dev, "[DMA] Ring15: Readback BASE=0x%08x %s\n",
+		 readback, (readback != 0) ? "OK!" : "FAILED - still 0!");
+
+	dev_info(&dev->pdev->dev, "[DMA] Allocating RX Ring 0 (MCU events)...\n");
 	ret = mt7927_ring_alloc(dev, &dev->rx_ring[MT_RX_RING_MCU], MT_RX_RING_SIZE_MCU);
 	if (ret)
 		return ret;
-	mt7927_ring_setup(dev, MT_RX_RING_BASE + MT_RX_RING_MCU * MT_RX_RING_SIZE,
-			  &dev->rx_ring[MT_RX_RING_MCU]);
 
-	/* Enable DMA */
+	base_reg = MT_RX_RING_BASE + MT_RX_RING_MCU * MT_RX_RING_SIZE;
+	dev_info(&dev->pdev->dev, "[DMA] RX Ring0: Writing BASE=0x%08x to reg 0x%05x\n",
+		 lower_32_bits(dev->rx_ring[MT_RX_RING_MCU].desc_dma), base_reg);
+	mt7927_ring_setup(dev, base_reg, &dev->rx_ring[MT_RX_RING_MCU]);
+
+	readback = mt7927_rr(dev, base_reg + MT_RING_BASE);
+	dev_info(&dev->pdev->dev, "[DMA] RX Ring0: Readback BASE=0x%08x %s\n",
+		 readback, (readback != 0) ? "OK!" : "FAILED - still 0!");
+
+	/* Step 6: Reset ring pointers and enable DMA */
 	mt7927_wr(dev, MT_WFDMA0_RST_DTX_PTR, ~0);
 	mt7927_wr(dev, MT_WFDMA0_RST_DRX_PTR, ~0);
 	mt7927_wr(dev, MT_WFDMA0_PRI_DLY_INT_CFG0, 0);
@@ -850,10 +918,10 @@ static int mt7927_mcu_send_cmd(struct mt7927_dev *dev, u8 cmd,
 	idx = ring->idx;
 	desc = &ring->desc[idx];
 
-	desc->buf0 = cpu_to_le32(dev->cmd_buf_dma);
+	desc->buf0 = cpu_to_le32(lower_32_bits(dev->cmd_buf_dma));
 	ctrl = FIELD_PREP(MT_DMA_CTL_SD_LEN0, sizeof(*txd) + len) | MT_DMA_CTL_LAST_SEC0;
 	desc->ctrl = cpu_to_le32(ctrl);
-	desc->buf1 = 0;
+	desc->buf1 = cpu_to_le32(upper_32_bits(dev->cmd_buf_dma));  /* Upper bits for 64-bit addr */
 	desc->info = 0;
 
 	wmb();
@@ -973,10 +1041,10 @@ static int mt7927_fw_scatter(struct mt7927_dev *dev, const u8 *data, size_t len)
 	idx = ring->idx;
 	desc = &ring->desc[idx];
 
-	desc->buf0 = cpu_to_le32(dev->fw_buf_dma);
+	desc->buf0 = cpu_to_le32(lower_32_bits(dev->fw_buf_dma));
 	ctrl = FIELD_PREP(MT_DMA_CTL_SD_LEN0, sizeof(*txd) + len) | MT_DMA_CTL_LAST_SEC0;
 	desc->ctrl = cpu_to_le32(ctrl);
-	desc->buf1 = 0;
+	desc->buf1 = cpu_to_le32(upper_32_bits(dev->fw_buf_dma));  /* Upper bits for 64-bit addr */
 	desc->info = 0;
 
 	wmb();
