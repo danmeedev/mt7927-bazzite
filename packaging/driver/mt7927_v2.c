@@ -1,15 +1,14 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.9.0
+ * MT7927 WiFi 7 Linux Driver v2.10.0
+ *
+ * v2.10.0 Changes:
+ * - Add interrupt setup before DMA init (required sequence)
+ * - Disable HOST_INT_ENA, enable PCIe MAC interrupts
+ * - This makes WPDMA registers writable
  *
  * v2.9.0 Changes:
- * - Use PATCH_START_REQ (0x05) instead of TARGET_ADDRESS_LEN_REQ for patch
- * - Add MCU wake signal before DMA operations
- * - Add diagnostic output for MCU_CMD register
- *
- * v2.8.0 Changes:
- * - Load ROM patch before main firmware (required sequence)
- * - Implement patch semaphore protocol
+ * - Use PATCH_START_REQ for patch, add MCU wake signal
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -22,7 +21,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.9.0"
+#define DRV_VERSION "2.10.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -110,6 +109,11 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define MT_MCU_CMD_RECOVERY_DONE	BIT(3)
 #define MT_MCU_CMD_NORMAL_STATE		BIT(4)
 #define MT_MCU_CMD_LMAC_DONE		BIT(5)
+
+/* Interrupt registers - must be configured before DMA init */
+#define MT_WFDMA0_HOST_INT_ENA		(MT_WFDMA0_BASE + 0x204)
+#define MT_PCIE_MAC_BASE		0x10000
+#define MT_PCIE_MAC_INT_ENABLE		(MT_PCIE_MAC_BASE + 0x188)
 
 /* Ring indices */
 #define MT_TX_RING_MCU_WM		15
@@ -551,6 +555,24 @@ static int mt7927_conninfra_wakeup(struct mt7927_dev *dev)
 		msleep(1);
 	}
 	return -ETIMEDOUT;
+}
+
+/*
+ * Interrupt setup - MUST be done before DMA init
+ * This makes WPDMA registers writable
+ */
+static void mt7927_irq_setup(struct mt7927_dev *dev)
+{
+	u32 val;
+
+	/* Disable host DMA interrupts first */
+	mt7927_wr(dev, MT_WFDMA0_HOST_INT_ENA, 0);
+
+	/* Enable PCIe MAC interrupts (required for WPDMA) */
+	mt7927_wr(dev, MT_PCIE_MAC_INT_ENABLE, 0xff);
+
+	val = mt7927_rr(dev, MT_PCIE_MAC_INT_ENABLE);
+	dev_info(&dev->pdev->dev, "[IRQ] PCIe MAC INT: 0x%08x\n", val);
 }
 
 /* =============================================================================
@@ -1031,6 +1053,9 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = mt7927_conninfra_wakeup(dev);
 	if (ret)
 		dev_warn(&pdev->dev, "ConnInfra issue\n");
+
+	/* Interrupt setup MUST happen before DMA init */
+	mt7927_irq_setup(dev);
 
 	ret = mt7927_dma_init(dev);
 	if (ret) {
