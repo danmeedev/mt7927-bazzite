@@ -1,20 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.13.0
+ * MT7927 WiFi 7 Linux Driver v2.14.0
+ *
+ * v2.14.0 Changes:
+ * - CRITICAL: Try MCU WPDMA window (0x2000) instead of host WFDMA (0xD4000)
+ * - Add DUMMY_CR write (BIT(1)) after DMA enable for handshake
+ * - The kernel mt76 driver uses MCU address 0x54000xxx which maps to BAR 0x2xxx
+ * - Ring registers may need MCU-side access, not host-side access
+ * - Add extensive debug for both address ranges
  *
  * v2.13.0 Changes:
  * - CRITICAL FIX: Disable clock gating IMMEDIATELY after DMA reset
  * - Add prefetch (EXT_CTRL) register configuration before ring setup
  * - Without CLK_GAT_DIS before ring writes, BASE addresses stay 0x00000000
  * - Add debug verification of ring BASE address writes
- *
- * v2.12.0 Changes:
- * - Add extensive register dump for debugging MCU state
- * - Dump ConnInfra, WFSYS, and WFDMA regions
- *
- * v2.11.0 Changes:
- * - Add ROM bootloader polling for 0x1D1E ready state
- * - WF_TOP_CFG_ON base address for ROM state checking
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -27,7 +26,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.13.0"
+#define DRV_VERSION "2.14.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -64,11 +63,26 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define WFSYS_SW_INIT_DONE		BIT(4)
 
 /* =============================================================================
- * WFDMA Registers
+ * WFDMA Registers - Two access methods available
+ *
+ * HOST WFDMA: Direct access at 0xD4000 in BAR0
+ * MCU WPDMA:  Access via fixed_map at 0x2000 (MCU addr 0x54000000)
+ *
+ * The kernel mt76 driver uses MCU WPDMA addresses (0x54000xxx)
+ * which get translated via fixed_map to BAR offset 0x2xxx.
  * =============================================================================
  */
 
+/* Host-side WFDMA base (what we've been using) */
 #define MT_WFDMA0_BASE			0xD4000
+
+/* MCU-side WPDMA base - mapped via fixed_map to BAR 0x2000 */
+#define MT_MCU_WPDMA0_BAR		0x2000	/* BAR offset after fixed_map translation */
+#define MT_MCU_WPDMA0_PHYS		0x54000000  /* Physical/MCU address */
+
+/* DUMMY_CR for DMA reinit handshake - at MCU WPDMA offset 0x120 */
+#define MT_WFDMA_DUMMY_CR		(MT_MCU_WPDMA0_BAR + 0x120)  /* = 0x2120 */
+#define MT_WFDMA_NEED_REINIT		BIT(1)
 
 #define MT_WFDMA0_GLO_CFG		(MT_WFDMA0_BASE + 0x208)
 #define MT_WFDMA0_GLO_CFG_TX_DMA_EN	BIT(0)
@@ -93,10 +107,19 @@ MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
 #define MT_WFDMA0_RST_DRX_PTR		(MT_WFDMA0_BASE + 0x260)
 #define MT_WFDMA0_PRI_DLY_INT_CFG0	(MT_WFDMA0_BASE + 0x238)
 
+/* Host WFDMA ring registers (what we've been using - reads back 0) */
 #define MT_TX_RING_BASE			(MT_WFDMA0_BASE + 0x300)
 #define MT_TX_RING_SIZE			0x10
 #define MT_RX_RING_BASE			(MT_WFDMA0_BASE + 0x500)
 #define MT_RX_RING_SIZE			0x10
+
+/* MCU WPDMA ring registers - try these instead! */
+#define MT_MCU_TX_RING_BASE		(MT_MCU_WPDMA0_BAR + 0x300)  /* 0x2300 */
+#define MT_MCU_RX_RING_BASE		(MT_MCU_WPDMA0_BAR + 0x500)  /* 0x2500 */
+
+/* MCU WPDMA GLO_CFG for comparison */
+#define MT_MCU_WPDMA0_GLO_CFG		(MT_MCU_WPDMA0_BAR + 0x208)  /* 0x2208 */
+#define MT_MCU_WPDMA0_RST		(MT_MCU_WPDMA0_BAR + 0x100)  /* 0x2100 */
 
 #define MT_RING_BASE			0x00
 #define MT_RING_CNT			0x04
@@ -433,12 +456,32 @@ static void mt7927_ring_setup(struct mt7927_dev *dev, u32 base_reg,
 
 static int mt7927_dma_init(struct mt7927_dev *dev)
 {
-	u32 val, base_reg, readback;
+	u32 val, base_reg, readback, mcu_base_reg;
 	int ret, i;
+	bool host_works = false, mcu_works = false;
 
-	dev_info(&dev->pdev->dev, "[DMA] Initializing v2.13 (CLK_GAT fix)...\n");
+	dev_info(&dev->pdev->dev, "[DMA] Initializing v2.14 (MCU WPDMA test)...\n");
 
-	/* Step 1: Disable DMA */
+	/*
+	 * Step 0: Compare HOST WFDMA (0xD4xxx) vs MCU WPDMA (0x2xxx) access
+	 *
+	 * The kernel mt76 driver uses MCU physical addresses (0x54000xxx)
+	 * which get translated via fixed_map to BAR offset 0x2xxx.
+	 * Let's see if the MCU WPDMA window gives us writable registers.
+	 */
+	dev_info(&dev->pdev->dev, "[DMA] Comparing HOST vs MCU register access:\n");
+	dev_info(&dev->pdev->dev, "[DMA]   HOST GLO_CFG (0x%05x) = 0x%08x\n",
+		 MT_WFDMA0_GLO_CFG, mt7927_rr(dev, MT_WFDMA0_GLO_CFG));
+	dev_info(&dev->pdev->dev, "[DMA]   MCU  GLO_CFG (0x%05x) = 0x%08x\n",
+		 MT_MCU_WPDMA0_GLO_CFG, mt7927_rr(dev, MT_MCU_WPDMA0_GLO_CFG));
+	dev_info(&dev->pdev->dev, "[DMA]   HOST RST     (0x%05x) = 0x%08x\n",
+		 MT_WFDMA0_RST, mt7927_rr(dev, MT_WFDMA0_RST));
+	dev_info(&dev->pdev->dev, "[DMA]   MCU  RST     (0x%05x) = 0x%08x\n",
+		 MT_MCU_WPDMA0_RST, mt7927_rr(dev, MT_MCU_WPDMA0_RST));
+	dev_info(&dev->pdev->dev, "[DMA]   DUMMY_CR    (0x%05x) = 0x%08x\n",
+		 MT_WFDMA_DUMMY_CR, mt7927_rr(dev, MT_WFDMA_DUMMY_CR));
+
+	/* Step 1: Disable DMA on both interfaces */
 	mt7927_clear(dev, MT_WFDMA0_GLO_CFG,
 		     MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN);
 
@@ -460,76 +503,105 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	msleep(1);
 	mt7927_clear(dev, MT_WFDMA0_RST, MT_WFDMA0_RST_LOGIC_RST | MT_WFDMA0_RST_DMASHDL_ALL_RST);
 
-	/*
-	 * Step 3: CRITICAL - Disable clock gating IMMEDIATELY after reset!
-	 *
-	 * The DMA reset puts WFDMA back to defaults with clock gating ENABLED.
-	 * With clock gating enabled, ring register writes DO NOT PERSIST.
-	 * This was the root cause of BASE addresses reading back as 0x00000000.
-	 */
-	dev_info(&dev->pdev->dev, "[DMA] CRITICAL: Disabling clock gating BEFORE ring setup...\n");
+	/* Step 3: Disable clock gating */
+	dev_info(&dev->pdev->dev, "[DMA] Disabling clock gating...\n");
 	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
-	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG after reset: 0x%08x (CLK_GAT_DIS=%d)\n",
-		 val, !!(val & MT_WFDMA0_GLO_CFG_CLK_GAT_DIS));
+	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG after reset: 0x%08x\n", val);
 
 	mt7927_set(dev, MT_WFDMA0_GLO_CFG, MT_WFDMA0_GLO_CFG_CLK_GAT_DIS);
 	val = mt7927_rr(dev, MT_WFDMA0_GLO_CFG);
 	dev_info(&dev->pdev->dev, "[DMA] GLO_CFG after CLK_GAT_DIS: 0x%08x\n", val);
 
-	/*
-	 * Step 4: Configure prefetch (EXT_CTRL) registers BEFORE ring setup.
-	 * This tells the DMA engine where to prefetch descriptors from.
-	 */
+	/* Step 4: Configure prefetch registers */
 	dev_info(&dev->pdev->dev, "[DMA] Configuring prefetch registers...\n");
 	mt7927_wr(dev, MT_WFDMA0_TX_RING15_EXT_CTRL, PREFETCH_TX_RING15);
 	mt7927_wr(dev, MT_WFDMA0_TX_RING16_EXT_CTRL, PREFETCH_TX_RING16);
 	mt7927_wr(dev, MT_WFDMA0_RX_RING0_EXT_CTRL, PREFETCH_RX_RING0);
 
-	/* Step 5: Allocate and setup rings */
-	dev_info(&dev->pdev->dev, "[DMA] Allocating TX Ring 16 (FWDL)...\n");
+	/* Step 5: Allocate rings */
+	dev_info(&dev->pdev->dev, "[DMA] Allocating ring descriptors...\n");
 	ret = mt7927_ring_alloc(dev, &dev->tx_ring[MT_TX_RING_FWDL], MT_TX_RING_SIZE_FWDL);
 	if (ret)
 		return ret;
-
-	base_reg = MT_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE;
-	dev_info(&dev->pdev->dev, "[DMA] Ring16: Writing BASE=0x%08x to reg 0x%05x\n",
-		 lower_32_bits(dev->tx_ring[MT_TX_RING_FWDL].desc_dma), base_reg);
-	mt7927_ring_setup(dev, base_reg, &dev->tx_ring[MT_TX_RING_FWDL]);
-
-	/* Verify the write persisted */
-	readback = mt7927_rr(dev, base_reg + MT_RING_BASE);
-	dev_info(&dev->pdev->dev, "[DMA] Ring16: Readback BASE=0x%08x %s\n",
-		 readback, (readback != 0) ? "OK!" : "FAILED - still 0!");
-
-	dev_info(&dev->pdev->dev, "[DMA] Allocating TX Ring 15 (MCU)...\n");
 	ret = mt7927_ring_alloc(dev, &dev->tx_ring[MT_TX_RING_MCU_WM], MT_TX_RING_SIZE_MCU);
 	if (ret)
 		return ret;
-
-	base_reg = MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE;
-	dev_info(&dev->pdev->dev, "[DMA] Ring15: Writing BASE=0x%08x to reg 0x%05x\n",
-		 lower_32_bits(dev->tx_ring[MT_TX_RING_MCU_WM].desc_dma), base_reg);
-	mt7927_ring_setup(dev, base_reg, &dev->tx_ring[MT_TX_RING_MCU_WM]);
-
-	readback = mt7927_rr(dev, base_reg + MT_RING_BASE);
-	dev_info(&dev->pdev->dev, "[DMA] Ring15: Readback BASE=0x%08x %s\n",
-		 readback, (readback != 0) ? "OK!" : "FAILED - still 0!");
-
-	dev_info(&dev->pdev->dev, "[DMA] Allocating RX Ring 0 (MCU events)...\n");
 	ret = mt7927_ring_alloc(dev, &dev->rx_ring[MT_RX_RING_MCU], MT_RX_RING_SIZE_MCU);
 	if (ret)
 		return ret;
 
-	base_reg = MT_RX_RING_BASE + MT_RX_RING_MCU * MT_RX_RING_SIZE;
-	dev_info(&dev->pdev->dev, "[DMA] RX Ring0: Writing BASE=0x%08x to reg 0x%05x\n",
-		 lower_32_bits(dev->rx_ring[MT_RX_RING_MCU].desc_dma), base_reg);
-	mt7927_ring_setup(dev, base_reg, &dev->rx_ring[MT_RX_RING_MCU]);
+	/*
+	 * Step 6: Try BOTH ring register locations and see which one works
+	 *
+	 * HOST WFDMA: Ring16 at 0xD4400 (what we've been using)
+	 * MCU WPDMA:  Ring16 at 0x2400  (kernel driver's MCU address)
+	 */
+	dev_info(&dev->pdev->dev, "\n[DMA] === Testing HOST WFDMA registers (0xD4xxx) ===\n");
 
+	/* Test HOST Ring16 */
+	base_reg = MT_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE;
+	dev_info(&dev->pdev->dev, "[DMA] HOST Ring16: Writing BASE=0x%08x to reg 0x%05x\n",
+		 lower_32_bits(dev->tx_ring[MT_TX_RING_FWDL].desc_dma), base_reg);
+	mt7927_ring_setup(dev, base_reg, &dev->tx_ring[MT_TX_RING_FWDL]);
 	readback = mt7927_rr(dev, base_reg + MT_RING_BASE);
-	dev_info(&dev->pdev->dev, "[DMA] RX Ring0: Readback BASE=0x%08x %s\n",
-		 readback, (readback != 0) ? "OK!" : "FAILED - still 0!");
+	dev_info(&dev->pdev->dev, "[DMA] HOST Ring16: Readback = 0x%08x %s\n",
+		 readback, (readback != 0) ? "OK!" : "FAILED");
+	if (readback != 0)
+		host_works = true;
 
-	/* Step 6: Reset ring pointers and enable DMA */
+	dev_info(&dev->pdev->dev, "\n[DMA] === Testing MCU WPDMA registers (0x2xxx) ===\n");
+
+	/* Test MCU Ring16 */
+	mcu_base_reg = MT_MCU_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE;
+	dev_info(&dev->pdev->dev, "[DMA] MCU Ring16: Writing BASE=0x%08x to reg 0x%05x\n",
+		 lower_32_bits(dev->tx_ring[MT_TX_RING_FWDL].desc_dma), mcu_base_reg);
+	mt7927_ring_setup(dev, mcu_base_reg, &dev->tx_ring[MT_TX_RING_FWDL]);
+	readback = mt7927_rr(dev, mcu_base_reg + MT_RING_BASE);
+	dev_info(&dev->pdev->dev, "[DMA] MCU Ring16: Readback = 0x%08x %s\n",
+		 readback, (readback != 0) ? "OK!" : "FAILED");
+	if (readback != 0)
+		mcu_works = true;
+
+	/* Also read HOST to see if MCU write affected it */
+	readback = mt7927_rr(dev, base_reg + MT_RING_BASE);
+	dev_info(&dev->pdev->dev, "[DMA] HOST Ring16 after MCU write: 0x%08x\n", readback);
+
+	/* Configure remaining rings using whichever method works */
+	dev_info(&dev->pdev->dev, "\n[DMA] === Configuring all rings ===\n");
+
+	if (mcu_works) {
+		dev_info(&dev->pdev->dev, "[DMA] Using MCU WPDMA (0x2xxx) for rings\n");
+
+		/* TX Ring 16 (FWDL) */
+		mcu_base_reg = MT_MCU_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE;
+		mt7927_ring_setup(dev, mcu_base_reg, &dev->tx_ring[MT_TX_RING_FWDL]);
+
+		/* TX Ring 15 (MCU) */
+		mcu_base_reg = MT_MCU_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE;
+		mt7927_ring_setup(dev, mcu_base_reg, &dev->tx_ring[MT_TX_RING_MCU_WM]);
+
+		/* RX Ring 0 (MCU events) */
+		mcu_base_reg = MT_MCU_RX_RING_BASE + MT_RX_RING_MCU * MT_RX_RING_SIZE;
+		mt7927_ring_setup(dev, mcu_base_reg, &dev->rx_ring[MT_RX_RING_MCU]);
+	} else if (host_works) {
+		dev_info(&dev->pdev->dev, "[DMA] Using HOST WFDMA (0xD4xxx) for rings\n");
+
+		/* TX Ring 16 already set up above */
+
+		/* TX Ring 15 */
+		base_reg = MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE;
+		mt7927_ring_setup(dev, base_reg, &dev->tx_ring[MT_TX_RING_MCU_WM]);
+
+		/* RX Ring 0 */
+		base_reg = MT_RX_RING_BASE + MT_RX_RING_MCU * MT_RX_RING_SIZE;
+		mt7927_ring_setup(dev, base_reg, &dev->rx_ring[MT_RX_RING_MCU]);
+	} else {
+		dev_err(&dev->pdev->dev, "[DMA] NEITHER HOST nor MCU ring registers work!\n");
+		dev_err(&dev->pdev->dev, "[DMA] This may require different initialization\n");
+		/* Continue anyway to see what happens */
+	}
+
+	/* Step 7: Reset ring pointers and enable DMA */
 	mt7927_wr(dev, MT_WFDMA0_RST_DTX_PTR, ~0);
 	mt7927_wr(dev, MT_WFDMA0_RST_DRX_PTR, ~0);
 	mt7927_wr(dev, MT_WFDMA0_PRI_DLY_INT_CFG0, 0);
@@ -550,10 +622,19 @@ static int mt7927_dma_init(struct mt7927_dev *dev)
 	if ((val & (MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN)) ==
 	    (MT_WFDMA0_GLO_CFG_TX_DMA_EN | MT_WFDMA0_GLO_CFG_RX_DMA_EN)) {
 		dev->dma_ready = true;
-		dev_info(&dev->pdev->dev, "[DMA] Ready: GLO_CFG=0x%08x\n", val);
+		dev_info(&dev->pdev->dev, "[DMA] DMA enabled: GLO_CFG=0x%08x\n", val);
 	}
 
-	/* Wake MCU/ROM so it starts processing DMA rings */
+	/*
+	 * Step 8: Set DUMMY_CR to indicate DMA needs reinit
+	 * This is what the kernel driver does after enabling DMA
+	 */
+	dev_info(&dev->pdev->dev, "[DMA] Setting DUMMY_CR for reinit handshake...\n");
+	mt7927_set(dev, MT_WFDMA_DUMMY_CR, MT_WFDMA_NEED_REINIT);
+	val = mt7927_rr(dev, MT_WFDMA_DUMMY_CR);
+	dev_info(&dev->pdev->dev, "[DMA] DUMMY_CR after set: 0x%08x\n", val);
+
+	/* Wake MCU/ROM */
 	val = mt7927_rr(dev, MT_MCU_CMD);
 	dev_info(&dev->pdev->dev, "[MCU] CMD before wake: 0x%08x\n", val);
 	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_WAKE_RX_PCIE);
