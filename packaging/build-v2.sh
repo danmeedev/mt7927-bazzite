@@ -40,11 +40,22 @@ if [ ! -f "mt7927_v2.c" ]; then
     exit 1
 fi
 
-# Create proper Makefile
-echo "Creating build Makefile..."
+# IMPORTANT: Remove any cached .o files and backup old Makefile
+echo "Removing cached build files..."
+rm -f *.o *.ko *.mod* .*.cmd Module.symvers modules.order 2>/dev/null || true
+rm -rf .tmp_versions 2>/dev/null || true
+
+# Backup existing Makefile
+if [ -f "Makefile" ]; then
+    mv Makefile Makefile.old
+fi
+
+# Create proper Makefile for v2
+echo "Creating v2 Makefile..."
 cat > Makefile << 'EOF'
+# MT7927 Driver v2.0 - Uses mt7927_v2.c (Gen4m architecture)
 obj-m := mt7927.o
-mt7927-objs := mt7927_v2.o
+mt7927-y := mt7927_v2.o
 
 ccflags-y += -Wall -Wno-unused-parameter
 
@@ -53,13 +64,17 @@ KDIR ?= /lib/modules/$(KVER)/build
 PWD := $(shell pwd)
 
 all:
+	@echo "Building MT7927 v2.0 (mt7927_v2.c)..."
 	$(MAKE) -C $(KDIR) M=$(PWD) modules
 
 clean:
 	$(MAKE) -C $(KDIR) M=$(PWD) clean
+	rm -f *.o .*.cmd
 
 .PHONY: all clean
 EOF
+
+echo "Makefile created for mt7927_v2.c"
 
 # Clean previous build
 echo "Cleaning previous build..."
