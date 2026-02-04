@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.11.0
+ * MT7927 WiFi 7 Linux Driver v2.12.0
+ *
+ * v2.12.0 Changes:
+ * - Add extensive register dump for debugging MCU state
+ * - Dump ConnInfra, WFSYS, and WFDMA regions
+ * - Try alternative DMA signaling methods
  *
  * v2.11.0 Changes:
  * - Add ROM bootloader polling for 0x1D1E ready state
@@ -26,7 +31,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.11.0"
+#define DRV_VERSION "2.12.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -607,6 +612,64 @@ static void mt7927_irq_setup(struct mt7927_dev *dev)
 
 	val = mt7927_rr(dev, MT_PCIE_MAC_INT_ENABLE);
 	dev_info(&dev->pdev->dev, "[IRQ] PCIe MAC INT: 0x%08x\n", val);
+}
+
+/*
+ * Dump key registers for debugging - helps identify what's happening
+ */
+static void mt7927_dump_debug_regs(struct mt7927_dev *dev, const char *label)
+{
+	u32 i, val;
+
+	dev_info(&dev->pdev->dev, "\n========== %s ==========\n", label);
+
+	/* ConnInfra HOST region (0x0E0000) */
+	dev_info(&dev->pdev->dev, "ConnInfra HOST (0x0E0000):\n");
+	for (i = 0; i < 0x100; i += 0x10) {
+		dev_info(&dev->pdev->dev, "  +0x%03x: %08x %08x %08x %08x\n", i,
+			 mt7927_rr(dev, CONN_INFRA_HOST_BAR_OFS + i),
+			 mt7927_rr(dev, CONN_INFRA_HOST_BAR_OFS + i + 4),
+			 mt7927_rr(dev, CONN_INFRA_HOST_BAR_OFS + i + 8),
+			 mt7927_rr(dev, CONN_INFRA_HOST_BAR_OFS + i + 12));
+	}
+
+	/* WFSYS region (0x0F0000) - first 256 bytes */
+	dev_info(&dev->pdev->dev, "WFSYS (0x0F0000):\n");
+	for (i = 0; i < 0x200; i += 0x10) {
+		dev_info(&dev->pdev->dev, "  +0x%03x: %08x %08x %08x %08x\n", i,
+			 mt7927_rr(dev, FIXED_MAP_CONN_INFRA + i),
+			 mt7927_rr(dev, FIXED_MAP_CONN_INFRA + i + 4),
+			 mt7927_rr(dev, FIXED_MAP_CONN_INFRA + i + 8),
+			 mt7927_rr(dev, FIXED_MAP_CONN_INFRA + i + 12));
+	}
+
+	/* WFDMA key registers */
+	dev_info(&dev->pdev->dev, "WFDMA (0xD4000):\n");
+	dev_info(&dev->pdev->dev, "  GLO_CFG (0x208): 0x%08x\n", mt7927_rr(dev, MT_WFDMA0_GLO_CFG));
+	dev_info(&dev->pdev->dev, "  HOST_INT_ENA (0x204): 0x%08x\n", mt7927_rr(dev, MT_WFDMA0_HOST_INT_ENA));
+	dev_info(&dev->pdev->dev, "  MCU_CMD (0x1f0): 0x%08x\n", mt7927_rr(dev, MT_MCU_CMD));
+
+	/* Ring 15 (MCU WM) */
+	val = MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE;
+	dev_info(&dev->pdev->dev, "  TX Ring15 BASE: 0x%08x\n", mt7927_rr(dev, val));
+	dev_info(&dev->pdev->dev, "  TX Ring15 CNT: 0x%08x\n", mt7927_rr(dev, val + 4));
+	dev_info(&dev->pdev->dev, "  TX Ring15 CIDX: 0x%08x\n", mt7927_rr(dev, val + 8));
+	dev_info(&dev->pdev->dev, "  TX Ring15 DIDX: 0x%08x\n", mt7927_rr(dev, val + 12));
+
+	/* Ring 16 (FWDL) */
+	val = MT_TX_RING_BASE + MT_TX_RING_FWDL * MT_TX_RING_SIZE;
+	dev_info(&dev->pdev->dev, "  TX Ring16 BASE: 0x%08x\n", mt7927_rr(dev, val));
+	dev_info(&dev->pdev->dev, "  TX Ring16 CNT: 0x%08x\n", mt7927_rr(dev, val + 4));
+	dev_info(&dev->pdev->dev, "  TX Ring16 CIDX: 0x%08x\n", mt7927_rr(dev, val + 8));
+	dev_info(&dev->pdev->dev, "  TX Ring16 DIDX: 0x%08x\n", mt7927_rr(dev, val + 12));
+
+	/* Additional MCU state registers */
+	dev_info(&dev->pdev->dev, "Additional:\n");
+	dev_info(&dev->pdev->dev, "  0xD41F4 (MCU2HOST_SW_INT_ENA): 0x%08x\n", mt7927_rr(dev, MT_WFDMA0_BASE + 0x1f4));
+	dev_info(&dev->pdev->dev, "  0xD4200 (HOST_INT_STA): 0x%08x\n", mt7927_rr(dev, MT_WFDMA0_BASE + 0x200));
+	dev_info(&dev->pdev->dev, "  0x10188 (PCIe MAC INT): 0x%08x\n", mt7927_rr(dev, MT_PCIE_MAC_INT_ENABLE));
+
+	dev_info(&dev->pdev->dev, "========================================\n\n");
 }
 
 /*
@@ -1199,6 +1262,9 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	if (ret)
 		dev_warn(&pdev->dev, "ConnInfra issue\n");
 
+	/* Dump registers BEFORE any further initialization */
+	mt7927_dump_debug_regs(dev, "AFTER WFSYS RESET + CONNINFRA WAKEUP");
+
 	/* Interrupt setup MUST happen before DMA init */
 	mt7927_irq_setup(dev);
 
@@ -1217,6 +1283,9 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		dev_err(&pdev->dev, "DMA init failed\n");
 		goto err_free;
 	}
+
+	/* Dump registers AFTER DMA init to compare */
+	mt7927_dump_debug_regs(dev, "AFTER DMA INIT");
 
 	if (dev->conninfra_ready && dev->dma_ready) {
 		ret = mt7927_load_firmware(dev);
