@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.16.0
+ * MT7927 WiFi 7 Linux Driver v2.17.0
+ *
+ * v2.17.0 Changes:
+ * - Add firmware_path module parameter for custom firmware location
+ * - Supports Bazzite/immutable distros: firmware_path=/var/lib/mt7927/firmware
+ * - Use request_firmware_direct() when custom path specified
  *
  * v2.16.0 Changes:
  * - CRITICAL: Ring 15 CIDX doesn't advance - Ring 15 not working!
@@ -25,7 +30,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.16.0"
+#define DRV_VERSION "2.17.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -36,6 +41,10 @@
 static bool debug = true;
 module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Enable debug output (default: true)");
+
+static char *firmware_path = "";
+module_param(firmware_path, charp, 0644);
+MODULE_PARM_DESC(firmware_path, "Custom firmware directory (e.g., /var/lib/mt7927/firmware)");
 
 /* =============================================================================
  * Register Definitions
@@ -1331,14 +1340,26 @@ static int mt7927_load_patch(struct mt7927_dev *dev)
 	const struct mt76_connac2_patch_hdr *hdr;
 	const u8 *data;
 	size_t data_len, offset, chunk;
+	char fw_path[256];
 	int ret;
 
 	dev_info(&dev->pdev->dev, "\n[PATCH] ========== Loading Patch ==========\n");
 
-	ret = request_firmware(&fw, MT6639_FIRMWARE_PATCH, &dev->pdev->dev);
+	/* Build firmware path - use custom path if specified */
+	if (firmware_path && firmware_path[0]) {
+		snprintf(fw_path, sizeof(fw_path), "%s/WIFI_MT6639_PATCH_MCU_2_1_hdr.bin",
+			 firmware_path);
+		dev_info(&dev->pdev->dev, "[PATCH] Using custom path: %s\n", fw_path);
+		ret = request_firmware_direct(&fw, fw_path, &dev->pdev->dev);
+	} else {
+		ret = request_firmware(&fw, MT6639_FIRMWARE_PATCH, &dev->pdev->dev);
+	}
 	if (ret) {
-		dev_err(&dev->pdev->dev, "[PATCH] Failed to load %s: %d\n",
-			MT6639_FIRMWARE_PATCH, ret);
+		dev_err(&dev->pdev->dev, "[PATCH] Failed to load firmware: %d\n", ret);
+		if (firmware_path && firmware_path[0])
+			dev_err(&dev->pdev->dev, "[PATCH] Tried: %s\n", fw_path);
+		else
+			dev_err(&dev->pdev->dev, "[PATCH] Tried: %s\n", MT6639_FIRMWARE_PATCH);
 		return ret;
 	}
 
@@ -1416,15 +1437,27 @@ static int mt7927_load_ram(struct mt7927_dev *dev)
 	const struct mt76_connac2_fw_region *region;
 	const u8 *data;
 	size_t offset, chunk;
+	char fw_path[256];
 	int ret, i;
 	u32 addr, len, mode;
 
 	dev_info(&dev->pdev->dev, "\n[FW] ========== Loading Main Firmware ==========\n");
 
-	ret = request_firmware(&fw, MT6639_FIRMWARE_RAM, &dev->pdev->dev);
+	/* Build firmware path - use custom path if specified */
+	if (firmware_path && firmware_path[0]) {
+		snprintf(fw_path, sizeof(fw_path), "%s/WIFI_RAM_CODE_MT6639_2_1.bin",
+			 firmware_path);
+		dev_info(&dev->pdev->dev, "[FW] Using custom path: %s\n", fw_path);
+		ret = request_firmware_direct(&fw, fw_path, &dev->pdev->dev);
+	} else {
+		ret = request_firmware(&fw, MT6639_FIRMWARE_RAM, &dev->pdev->dev);
+	}
 	if (ret) {
-		dev_err(&dev->pdev->dev, "[FW] Failed to load %s: %d\n",
-			MT6639_FIRMWARE_RAM, ret);
+		dev_err(&dev->pdev->dev, "[FW] Failed to load firmware: %d\n", ret);
+		if (firmware_path && firmware_path[0])
+			dev_err(&dev->pdev->dev, "[FW] Tried: %s\n", fw_path);
+		else
+			dev_err(&dev->pdev->dev, "[FW] Tried: %s\n", MT6639_FIRMWARE_RAM);
 		return ret;
 	}
 
