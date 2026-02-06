@@ -1,22 +1,17 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.18.0
+ * MT7927 WiFi 7 Linux Driver v2.19.0
+ *
+ * v2.19.0 Changes:
+ * - CRITICAL: MCU_CMD writes don't stick (reads back 0x00)
+ * - WFSYS+0x10 = 0x1d2 not 0x1D1E - WF subsystem may not be powered
+ * - Add WF_ON power control sequence before WFDMA init
+ * - Try enabling WF subsystem via ConnInfra power control registers
+ * - Add bus remapping for WFDMA access through ConnInfra
  *
  * v2.18.0 Changes:
  * - Enhanced ROM interrupt configuration before FW_START
  * - Enable MCU2HOST_SW_INT_ENA and TX ring command interrupts
- * - Add ConnInfra WAKEUP pulse before FW_START command
- * - Try direct WFSYS CFG register kick to trigger MCU execution
- * - Add DUMMY_CR DMA reinit handshake sequence
- * - Research-based: ROM needs interrupt path enabled to receive commands
- *
- * v2.17.0 Changes:
- * - Add firmware_path module parameter for custom firmware location
- * - Supports Bazzite/immutable distros: firmware_path=/var/lib/mt7927/firmware
- *
- * v2.16.0 Changes:
- * - CRITICAL: Ring 15 CIDX doesn't advance - Ring 15 not working!
- * - Try sending FW_START via Ring 16 (FWDL) which does work
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -29,7 +24,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.18.0"
+#define DRV_VERSION "2.19.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -227,6 +222,43 @@ MODULE_PARM_DESC(firmware_path, "Custom firmware directory (e.g., /var/lib/mt792
 /* MCU execution trigger - alternative addresses from Gen4m */
 #define MT_WF_SUBSYS_RST		(CONN_INFRA_CFG_ON_BASE + 0x610)
 #define MT_WF_MCU_PC			(CONN_INFRA_CFG_ON_BASE + 0x620)
+
+/* =============================================================================
+ * WF Subsystem Power Control (Gen4m/MT6639)
+ *
+ * The WF subsystem needs to be powered on before WFDMA registers are accessible.
+ * This is controlled via ConnInfra power management registers.
+ * =============================================================================
+ */
+
+/* WF_ON Power Control - must be enabled before WFDMA works */
+#define CONN_INFRA_WF_ON_PWR_CTL	(CONN_INFRA_CFG_ON_BASE + 0x0)
+#define CONN_INFRA_WF_SLP_CTL		(CONN_INFRA_CFG_ON_BASE + 0x4)
+#define CONN_INFRA_WF_SLP_STATUS	(CONN_INFRA_CFG_ON_BASE + 0x8)
+
+/* WF Power state bits */
+#define WF_ON_PWR_ON			BIT(0)
+#define WF_ON_PWR_ACK			BIT(1)
+#define WF_SLP_TOP_CK_EN		BIT(0)
+
+/* WF_CTRL_STATUS at WFSYS+0x10 - the 0x1d2 we're seeing */
+#define WFSYS_CTRL_STATUS		(FIXED_MAP_CONN_INFRA + 0x10)
+
+/* Expected ROM ready value */
+#define WF_ROM_READY			0x1D1E
+
+/* Alternative: WF MCUSYS Power Control (from Android MTK driver) */
+#define WF_MCUSYS_PWR_CTL		(FIXED_MAP_CONN_INFRA + 0x100)
+#define WF_MCUSYS_PWR_ON		BIT(0)
+#define WF_MCUSYS_PWR_ACK		BIT(4)
+
+/* WF Top Clock Control */
+#define WF_TOP_CLK_CTL			(FIXED_MAP_CONN_INFRA + 0x120)
+#define WF_TOP_CLK_EN			BIT(0)
+
+/* CONN_INFRA to WF bus control - for remapped access */
+#define CONN_INFRA_WF_REMAP_BASE	0x18000000
+#define CONN_INFRA_WF_REMAP_CTRL	(CONN_HOST_CSR_TOP_BASE + 0x1c0)
 
 /* Ring indices */
 #define MT_TX_RING_MCU_WM		15
@@ -975,6 +1007,134 @@ static int mt7927_poll_rom_state(struct mt7927_dev *dev)
 	 */
 	dev_warn(&dev->pdev->dev, "[ROM] Did not see 0x1D1E ready value, continuing...\n");
 	return 0;  /* Return success to continue - we'll see if FW load works */
+}
+
+/*
+ * v2.19: Enable WF subsystem power
+ *
+ * The WFSYS+0x10 = 0x1d2 suggests the WF subsystem is not fully powered.
+ * We need to enable WF power through ConnInfra before WFDMA will work.
+ */
+static int mt7927_enable_wf_power(struct mt7927_dev *dev)
+{
+	u32 val, status;
+	int i;
+
+	dev_info(&dev->pdev->dev, "[WF_PWR] v2.19: Enabling WF subsystem power...\n");
+
+	/* Read current power status */
+	val = mt7927_rr(dev, WFSYS_CTRL_STATUS);
+	dev_info(&dev->pdev->dev, "[WF_PWR] WFSYS_CTRL_STATUS: 0x%08x (want 0x1D1E)\n", val);
+
+	/* Read WF_ON power control */
+	val = mt7927_rr(dev, CONN_INFRA_WF_ON_PWR_CTL);
+	dev_info(&dev->pdev->dev, "[WF_PWR] WF_ON_PWR_CTL before: 0x%08x\n", val);
+
+	/* Read MCUSYS power control */
+	val = mt7927_rr(dev, WF_MCUSYS_PWR_CTL);
+	dev_info(&dev->pdev->dev, "[WF_PWR] WF_MCUSYS_PWR_CTL before: 0x%08x\n", val);
+
+	/* Read WF Top Clock Control */
+	val = mt7927_rr(dev, WF_TOP_CLK_CTL);
+	dev_info(&dev->pdev->dev, "[WF_PWR] WF_TOP_CLK_CTL before: 0x%08x\n", val);
+
+	/* Step 1: Enable WF_ON power */
+	dev_info(&dev->pdev->dev, "[WF_PWR] Step 1: Enable WF_ON power\n");
+	mt7927_set(dev, CONN_INFRA_WF_ON_PWR_CTL, WF_ON_PWR_ON);
+	msleep(5);
+
+	/* Check for power ACK */
+	for (i = 0; i < 50; i++) {
+		val = mt7927_rr(dev, CONN_INFRA_WF_ON_PWR_CTL);
+		if (val & WF_ON_PWR_ACK) {
+			dev_info(&dev->pdev->dev, "[WF_PWR] WF_ON power ACK received\n");
+			break;
+		}
+		msleep(1);
+	}
+	dev_info(&dev->pdev->dev, "[WF_PWR] WF_ON_PWR_CTL after: 0x%08x\n", val);
+
+	/* Step 2: Enable MCUSYS power */
+	dev_info(&dev->pdev->dev, "[WF_PWR] Step 2: Enable MCUSYS power\n");
+	mt7927_set(dev, WF_MCUSYS_PWR_CTL, WF_MCUSYS_PWR_ON);
+	msleep(5);
+
+	/* Check for MCUSYS power ACK */
+	for (i = 0; i < 50; i++) {
+		val = mt7927_rr(dev, WF_MCUSYS_PWR_CTL);
+		if (val & WF_MCUSYS_PWR_ACK) {
+			dev_info(&dev->pdev->dev, "[WF_PWR] MCUSYS power ACK received\n");
+			break;
+		}
+		msleep(1);
+	}
+	dev_info(&dev->pdev->dev, "[WF_PWR] WF_MCUSYS_PWR_CTL after: 0x%08x\n", val);
+
+	/* Step 3: Enable WF Top clocks */
+	dev_info(&dev->pdev->dev, "[WF_PWR] Step 3: Enable WF Top clocks\n");
+	mt7927_set(dev, WF_TOP_CLK_CTL, WF_TOP_CLK_EN);
+	msleep(2);
+	val = mt7927_rr(dev, WF_TOP_CLK_CTL);
+	dev_info(&dev->pdev->dev, "[WF_PWR] WF_TOP_CLK_CTL after: 0x%08x\n", val);
+
+	/* Step 4: Disable sleep control */
+	dev_info(&dev->pdev->dev, "[WF_PWR] Step 4: Disable WF sleep\n");
+	mt7927_wr(dev, CONN_INFRA_WF_SLP_CTL, 0);
+	msleep(2);
+
+	/* Step 5: Check final status */
+	status = mt7927_rr(dev, WFSYS_CTRL_STATUS);
+	dev_info(&dev->pdev->dev, "[WF_PWR] WFSYS_CTRL_STATUS after power: 0x%08x\n", status);
+
+	/* Step 6: Try toggling WFSYS reset after power enable */
+	dev_info(&dev->pdev->dev, "[WF_PWR] Step 6: Toggle WFSYS reset\n");
+	val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
+	dev_info(&dev->pdev->dev, "[WF_PWR] WFSYS_RST before: 0x%08x\n", val);
+
+	/* Clear reset, wait, then set reset */
+	mt7927_clear(dev, MT_WFSYS_RST_BAR_OFS, WFSYS_SW_RST_B);
+	msleep(10);
+	mt7927_set(dev, MT_WFSYS_RST_BAR_OFS, WFSYS_SW_RST_B);
+	msleep(50);
+
+	val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
+	dev_info(&dev->pdev->dev, "[WF_PWR] WFSYS_RST after toggle: 0x%08x\n", val);
+
+	/* Wait for INIT_DONE */
+	for (i = 0; i < 100; i++) {
+		val = mt7927_rr(dev, MT_WFSYS_RST_BAR_OFS);
+		if (val & WFSYS_SW_INIT_DONE) {
+			dev_info(&dev->pdev->dev, "[WF_PWR] WFSYS INIT_DONE!\n");
+			break;
+		}
+		msleep(5);
+	}
+
+	/* Final status check */
+	status = mt7927_rr(dev, WFSYS_CTRL_STATUS);
+	dev_info(&dev->pdev->dev, "[WF_PWR] Final WFSYS_CTRL_STATUS: 0x%08x\n", status);
+
+	if (status == WF_ROM_READY) {
+		dev_info(&dev->pdev->dev, "[WF_PWR] ROM READY (0x1D1E) achieved!\n");
+		return 0;
+	}
+
+	/* Even if we don't get 0x1D1E, check if MCU_CMD is now writable */
+	dev_info(&dev->pdev->dev, "[WF_PWR] Testing MCU_CMD writability...\n");
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD before: 0x%08x\n", val);
+	mt7927_wr(dev, MT_MCU_CMD, 0xDEADBEEF);
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD after write 0xDEADBEEF: 0x%08x\n", val);
+
+	if (val == 0xDEADBEEF || val != 0) {
+		dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD is now writable!\n");
+		mt7927_wr(dev, MT_MCU_CMD, 0);  /* Clear test value */
+		return 0;
+	}
+
+	dev_warn(&dev->pdev->dev, "[WF_PWR] MCU_CMD still not writable\n");
+	return -EAGAIN;  /* Continue anyway */
 }
 
 /*
@@ -1852,6 +2012,11 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = mt7927_wake_rom(dev);
 	if (ret)
 		dev_warn(&pdev->dev, "ROM wake issue\n");
+
+	/* v2.19: Enable WF subsystem power before DMA init */
+	ret = mt7927_enable_wf_power(dev);
+	if (ret)
+		dev_warn(&pdev->dev, "WF power enable issue\n");
 
 	ret = mt7927_dma_init(dev);
 	if (ret) {
