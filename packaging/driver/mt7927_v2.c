@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.17.0
+ * MT7927 WiFi 7 Linux Driver v2.18.0
+ *
+ * v2.18.0 Changes:
+ * - Enhanced ROM interrupt configuration before FW_START
+ * - Enable MCU2HOST_SW_INT_ENA and TX ring command interrupts
+ * - Add ConnInfra WAKEUP pulse before FW_START command
+ * - Try direct WFSYS CFG register kick to trigger MCU execution
+ * - Add DUMMY_CR DMA reinit handshake sequence
+ * - Research-based: ROM needs interrupt path enabled to receive commands
  *
  * v2.17.0 Changes:
  * - Add firmware_path module parameter for custom firmware location
  * - Supports Bazzite/immutable distros: firmware_path=/var/lib/mt7927/firmware
- * - Use request_firmware_direct() when custom path specified
  *
  * v2.16.0 Changes:
  * - CRITICAL: Ring 15 CIDX doesn't advance - Ring 15 not working!
  * - Try sending FW_START via Ring 16 (FWDL) which does work
- * - Add MCU WPDMA Ring 15 CIDX write (0x23F8) as alternative doorbell
- * - Try direct MCU_CMD register trigger for FW execution
- * - Add explicit CIDX write verification with read-back
- *
- * v2.15.0 Changes:
- * - DISCOVERY: Ring BASE reads 0 but DMA transfers actually WORK!
- * - FW regions transfer successfully via Ring 16 (FWDL)
- * - Issue: FW_START via Ring 15 (MCU) - need to verify it's processed
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -30,7 +29,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.17.0"
+#define DRV_VERSION "2.18.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -169,8 +168,21 @@ MODULE_PARM_DESC(firmware_path, "Custom firmware directory (e.g., /var/lib/mt792
 
 /* Interrupt registers - must be configured before DMA init */
 #define MT_WFDMA0_HOST_INT_ENA		(MT_WFDMA0_BASE + 0x204)
+#define MT_WFDMA0_HOST_INT_STA		(MT_WFDMA0_BASE + 0x200)
 #define MT_PCIE_MAC_BASE		0x10000
 #define MT_PCIE_MAC_INT_ENABLE		(MT_PCIE_MAC_BASE + 0x188)
+
+/* MCU2HOST Software Interrupt Enable - critical for ROM to signal back */
+#define MT_MCU2HOST_SW_INT_ENA		(MT_WFDMA0_BASE + 0x1f4)
+#define MT_MCU2HOST_SW_INT_STA		(MT_WFDMA0_BASE + 0x1f8)
+#define MT_MCU2HOST_SW_INT_SET		(MT_WFDMA0_BASE + 0x10c)
+
+/* TX Ring interrupt enables - needed for command ring processing */
+#define MT_WFDMA0_TX_RING_INBAND_CMD_INT_ENA	(MT_WFDMA0_BASE + 0x24c)
+
+/* Interrupt enable bits */
+#define HOST_INT_TX_DONE_ALL		GENMASK(31, 0)
+#define MCU2HOST_SW_INT_ALL		0xFFFFFFFF
 
 /* =============================================================================
  * ROM Bootloader State Registers (Gen4m/MT6639)
@@ -200,6 +212,21 @@ MODULE_PARM_DESC(firmware_path, "Custom firmware directory (e.g., /var/lib/mt792
 #define CONN_INFRA_CFG_ON_BASE		0x0f0000
 #define CONN_INFRA_WAKEUP_REG		(CONN_INFRA_CFG_ON_BASE + 0x10)
 #define CONN_INFRA_SLEEP_REG		(CONN_INFRA_CFG_ON_BASE + 0x14)
+
+/* ConnInfra HOST_CSR_TOP registers for ROM wakeup (Gen4m specific) */
+#define CONN_HOST_CSR_TOP_BASE			0x0e0000
+#define CONN_HOST_CSR_TOP_CONN_INFRA_WAKEPU	(CONN_HOST_CSR_TOP_BASE + 0x1a0)
+#define CONN_HOST_CSR_TOP_WF_BAND0_IRQ_STAT	(CONN_HOST_CSR_TOP_BASE + 0x10)
+#define CONN_HOST_CSR_TOP_WF_BAND0_IRQ_ENA	(CONN_HOST_CSR_TOP_BASE + 0x14)
+
+/* WFSYS SW control registers */
+#define WFSYS_SW_RST_REG		(CONN_INFRA_CFG_ON_BASE + 0x140)
+#define WFSYS_CPU_SW_RST_B		BIT(0)
+#define WFSYS_ON_TOP_PWR_CTL		(CONN_INFRA_CFG_ON_BASE + 0x0)
+
+/* MCU execution trigger - alternative addresses from Gen4m */
+#define MT_WF_SUBSYS_RST		(CONN_INFRA_CFG_ON_BASE + 0x610)
+#define MT_WF_MCU_PC			(CONN_INFRA_CFG_ON_BASE + 0x620)
 
 /* Ring indices */
 #define MT_TX_RING_MCU_WM		15
@@ -755,20 +782,55 @@ static int mt7927_conninfra_wakeup(struct mt7927_dev *dev)
 
 /*
  * Interrupt setup - MUST be done before DMA init
- * This makes WPDMA registers writable
+ * This makes WPDMA registers writable and enables ROM to receive commands
+ *
+ * v2.18: Enhanced interrupt setup based on MT6639/Gen4m research
+ * - MCU2HOST_SW_INT_ENA must be enabled for ROM to signal back
+ * - TX_RING_INBAND_CMD_INT must be enabled for command ring processing
+ * - HOST_INT_ENA enables TX done notifications
  */
 static void mt7927_irq_setup(struct mt7927_dev *dev)
 {
 	u32 val;
 
-	/* Disable host DMA interrupts first */
-	mt7927_wr(dev, MT_WFDMA0_HOST_INT_ENA, 0);
+	dev_info(&dev->pdev->dev, "[IRQ] v2.18: Enhanced interrupt setup\n");
 
-	/* Enable PCIe MAC interrupts (required for WPDMA) */
+	/* Step 1: Clear any pending interrupts first */
+	val = mt7927_rr(dev, MT_WFDMA0_HOST_INT_STA);
+	dev_info(&dev->pdev->dev, "[IRQ] HOST_INT_STA (pending): 0x%08x\n", val);
+	mt7927_wr(dev, MT_WFDMA0_HOST_INT_STA, val);  /* W1C - write to clear */
+
+	val = mt7927_rr(dev, MT_MCU2HOST_SW_INT_STA);
+	dev_info(&dev->pdev->dev, "[IRQ] MCU2HOST_SW_INT_STA (pending): 0x%08x\n", val);
+	mt7927_wr(dev, MT_MCU2HOST_SW_INT_STA, val);  /* W1C */
+
+	/* Step 2: Enable MCU2HOST software interrupts - CRITICAL for ROM */
+	dev_info(&dev->pdev->dev, "[IRQ] Enabling MCU2HOST_SW_INT_ENA...\n");
+	mt7927_wr(dev, MT_MCU2HOST_SW_INT_ENA, MCU2HOST_SW_INT_ALL);
+	val = mt7927_rr(dev, MT_MCU2HOST_SW_INT_ENA);
+	dev_info(&dev->pdev->dev, "[IRQ] MCU2HOST_SW_INT_ENA: 0x%08x\n", val);
+
+	/* Step 3: Enable TX ring command interrupt for Ring 15 */
+	dev_info(&dev->pdev->dev, "[IRQ] Enabling TX_RING_INBAND_CMD_INT_ENA...\n");
+	mt7927_wr(dev, MT_WFDMA0_TX_RING_INBAND_CMD_INT_ENA, BIT(15) | BIT(16));  /* Ring 15 + 16 */
+	val = mt7927_rr(dev, MT_WFDMA0_TX_RING_INBAND_CMD_INT_ENA);
+	dev_info(&dev->pdev->dev, "[IRQ] TX_RING_INBAND_CMD_INT_ENA: 0x%08x\n", val);
+
+	/* Step 4: Enable host DMA TX done interrupts for all TX rings */
+	dev_info(&dev->pdev->dev, "[IRQ] Enabling HOST_INT_ENA (TX done)...\n");
+	mt7927_wr(dev, MT_WFDMA0_HOST_INT_ENA, 0xFFFFFFFF);
+	val = mt7927_rr(dev, MT_WFDMA0_HOST_INT_ENA);
+	dev_info(&dev->pdev->dev, "[IRQ] HOST_INT_ENA: 0x%08x\n", val);
+
+	/* Step 5: Enable PCIe MAC interrupts (required for WPDMA) */
 	mt7927_wr(dev, MT_PCIE_MAC_INT_ENABLE, 0xff);
-
 	val = mt7927_rr(dev, MT_PCIE_MAC_INT_ENABLE);
 	dev_info(&dev->pdev->dev, "[IRQ] PCIe MAC INT: 0x%08x\n", val);
+
+	/* Step 6: Enable ConnInfra HOST WF interrupts */
+	mt7927_wr(dev, CONN_HOST_CSR_TOP_WF_BAND0_IRQ_ENA, 0xFFFFFFFF);
+	val = mt7927_rr(dev, CONN_HOST_CSR_TOP_WF_BAND0_IRQ_ENA);
+	dev_info(&dev->pdev->dev, "[IRQ] ConnInfra WF_IRQ_ENA: 0x%08x\n", val);
 }
 
 /*
@@ -821,10 +883,21 @@ static void mt7927_dump_debug_regs(struct mt7927_dev *dev, const char *label)
 	dev_info(&dev->pdev->dev, "  TX Ring16 DIDX: 0x%08x\n", mt7927_rr(dev, val + 12));
 
 	/* Additional MCU state registers */
-	dev_info(&dev->pdev->dev, "Additional:\n");
-	dev_info(&dev->pdev->dev, "  0xD41F4 (MCU2HOST_SW_INT_ENA): 0x%08x\n", mt7927_rr(dev, MT_WFDMA0_BASE + 0x1f4));
-	dev_info(&dev->pdev->dev, "  0xD4200 (HOST_INT_STA): 0x%08x\n", mt7927_rr(dev, MT_WFDMA0_BASE + 0x200));
-	dev_info(&dev->pdev->dev, "  0x10188 (PCIe MAC INT): 0x%08x\n", mt7927_rr(dev, MT_PCIE_MAC_INT_ENABLE));
+	dev_info(&dev->pdev->dev, "Interrupt registers:\n");
+	dev_info(&dev->pdev->dev, "  MCU2HOST_SW_INT_ENA (0x%05x): 0x%08x\n", MT_MCU2HOST_SW_INT_ENA, mt7927_rr(dev, MT_MCU2HOST_SW_INT_ENA));
+	dev_info(&dev->pdev->dev, "  MCU2HOST_SW_INT_STA (0x%05x): 0x%08x\n", MT_MCU2HOST_SW_INT_STA, mt7927_rr(dev, MT_MCU2HOST_SW_INT_STA));
+	dev_info(&dev->pdev->dev, "  HOST_INT_ENA (0x%05x): 0x%08x\n", MT_WFDMA0_HOST_INT_ENA, mt7927_rr(dev, MT_WFDMA0_HOST_INT_ENA));
+	dev_info(&dev->pdev->dev, "  HOST_INT_STA (0x%05x): 0x%08x\n", MT_WFDMA0_HOST_INT_STA, mt7927_rr(dev, MT_WFDMA0_HOST_INT_STA));
+	dev_info(&dev->pdev->dev, "  TX_RING_CMD_INT_ENA (0x%05x): 0x%08x\n", MT_WFDMA0_TX_RING_INBAND_CMD_INT_ENA, mt7927_rr(dev, MT_WFDMA0_TX_RING_INBAND_CMD_INT_ENA));
+	dev_info(&dev->pdev->dev, "  PCIe MAC INT (0x10188): 0x%08x\n", mt7927_rr(dev, MT_PCIE_MAC_INT_ENABLE));
+	dev_info(&dev->pdev->dev, "  ConnInfra WF_IRQ_ENA: 0x%08x\n", mt7927_rr(dev, CONN_HOST_CSR_TOP_WF_BAND0_IRQ_ENA));
+
+	/* MCU state */
+	dev_info(&dev->pdev->dev, "MCU state:\n");
+	dev_info(&dev->pdev->dev, "  DUMMY_CR (0x%05x): 0x%08x\n", MT_WFDMA_DUMMY_CR, mt7927_rr(dev, MT_WFDMA_DUMMY_CR));
+	dev_info(&dev->pdev->dev, "  MCU_CMD (0x%05x): 0x%08x\n", MT_MCU_CMD, mt7927_rr(dev, MT_MCU_CMD));
+	dev_info(&dev->pdev->dev, "  WFSYS_SW_RST: 0x%08x\n", mt7927_rr(dev, WFSYS_SW_RST_REG));
+	dev_info(&dev->pdev->dev, "  MCU_PC: 0x%08x\n", mt7927_rr(dev, MT_WF_MCU_PC));
 
 	dev_info(&dev->pdev->dev, "========================================\n\n");
 }
@@ -1158,6 +1231,118 @@ static int mt7927_fw_start_via_ring16(struct mt7927_dev *dev, u32 addr)
 }
 
 /*
+ * v2.18: Enhanced ConnInfra wakeup pulse before FW_START
+ * The ROM bootloader requires the ConnInfra wakeup signal to be asserted
+ * before it will process commands. This is separate from initial wakeup.
+ */
+static void mt7927_conninfra_wakeup_pulse(struct mt7927_dev *dev)
+{
+	u32 val;
+
+	dev_info(&dev->pdev->dev, "[ROM] Sending ConnInfra wakeup pulse...\n");
+
+	/* Method 1: CONN_HOST_CSR_TOP_CONN_INFRA_WAKEPU - from Gen4m source */
+	val = mt7927_rr(dev, CONN_HOST_CSR_TOP_CONN_INFRA_WAKEPU);
+	dev_info(&dev->pdev->dev, "[ROM] WAKEPU before: 0x%08x\n", val);
+	mt7927_wr(dev, CONN_HOST_CSR_TOP_CONN_INFRA_WAKEPU, 0x1);
+	msleep(5);
+	val = mt7927_rr(dev, CONN_HOST_CSR_TOP_CONN_INFRA_WAKEPU);
+	dev_info(&dev->pdev->dev, "[ROM] WAKEPU after: 0x%08x\n", val);
+
+	/* Method 2: CONN_INFRA_WAKEUP_REG - standard wakeup */
+	val = mt7927_rr(dev, CONN_INFRA_WAKEUP_REG);
+	dev_info(&dev->pdev->dev, "[ROM] WAKEUP_REG before: 0x%08x\n", val);
+	mt7927_wr(dev, CONN_INFRA_WAKEUP_REG, 0x1);
+	msleep(2);
+
+	/* Method 3: Clear own/sleep state */
+	mt7927_wr(dev, MT_LPCTL_BAR_OFS, PCIE_LPCR_HOST_CLR_OWN);
+	msleep(2);
+
+	/* Read back status */
+	val = mt7927_rr(dev, MT_CONN_MISC_BAR_OFS);
+	dev_info(&dev->pdev->dev, "[ROM] CONN_MISC after wakeup: 0x%08x\n", val);
+}
+
+/*
+ * v2.18: Try triggering MCU via software interrupt
+ * The MCU may need a software interrupt to begin processing queued commands
+ */
+static void mt7927_trigger_mcu_sw_int(struct mt7927_dev *dev)
+{
+	u32 val;
+
+	dev_info(&dev->pdev->dev, "[MCU] Triggering software interrupt...\n");
+
+	/* Write to MCU2HOST_SW_INT_SET to generate interrupt */
+	mt7927_wr(dev, MT_MCU2HOST_SW_INT_SET, BIT(0));
+	msleep(5);
+
+	/* Check if interrupt was acknowledged */
+	val = mt7927_rr(dev, MT_MCU2HOST_SW_INT_STA);
+	dev_info(&dev->pdev->dev, "[MCU] MCU2HOST_SW_INT_STA: 0x%08x\n", val);
+}
+
+/*
+ * v2.18: Try triggering MCU via WFSYS reset deassert
+ * The MCU PC may need to be kicked by toggling WFSYS reset
+ */
+static void mt7927_kick_mcu_via_reset(struct mt7927_dev *dev)
+{
+	u32 val, val_pc;
+
+	dev_info(&dev->pdev->dev, "[MCU] Trying reset-based MCU kick...\n");
+
+	/* Read MCU PC before */
+	val_pc = mt7927_rr(dev, MT_WF_MCU_PC);
+	dev_info(&dev->pdev->dev, "[MCU] MCU PC before: 0x%08x\n", val_pc);
+
+	/* Read current reset state */
+	val = mt7927_rr(dev, WFSYS_SW_RST_REG);
+	dev_info(&dev->pdev->dev, "[MCU] WFSYS_SW_RST before: 0x%08x\n", val);
+
+	/* Toggle CPU reset - deassert then assert RST_B */
+	mt7927_set(dev, WFSYS_SW_RST_REG, WFSYS_CPU_SW_RST_B);
+	msleep(10);
+
+	val = mt7927_rr(dev, WFSYS_SW_RST_REG);
+	dev_info(&dev->pdev->dev, "[MCU] WFSYS_SW_RST after set: 0x%08x\n", val);
+
+	/* Read MCU PC after */
+	val_pc = mt7927_rr(dev, MT_WF_MCU_PC);
+	dev_info(&dev->pdev->dev, "[MCU] MCU PC after: 0x%08x\n", val_pc);
+}
+
+/*
+ * v2.18: DUMMY_CR handshake sequence
+ * The MCU monitors DUMMY_CR for DMA reinit requests
+ */
+static void mt7927_dummy_cr_handshake(struct mt7927_dev *dev)
+{
+	u32 val;
+	int i;
+
+	dev_info(&dev->pdev->dev, "[MCU] Starting DUMMY_CR handshake...\n");
+
+	/* Set NEED_REINIT bit */
+	mt7927_set(dev, MT_WFDMA_DUMMY_CR, MT_WFDMA_NEED_REINIT);
+	val = mt7927_rr(dev, MT_WFDMA_DUMMY_CR);
+	dev_info(&dev->pdev->dev, "[MCU] DUMMY_CR after set: 0x%08x\n", val);
+
+	/* Wait for MCU to clear it (indicates MCU saw the request) */
+	for (i = 0; i < 50; i++) {
+		val = mt7927_rr(dev, MT_WFDMA_DUMMY_CR);
+		if (!(val & MT_WFDMA_NEED_REINIT)) {
+			dev_info(&dev->pdev->dev, "[MCU] DUMMY_CR cleared by MCU!\n");
+			return;
+		}
+		msleep(10);
+	}
+
+	dev_info(&dev->pdev->dev, "[MCU] DUMMY_CR not cleared (MCU not responding)\n");
+}
+
+/*
  * Try direct MCU_CMD register method to kick firmware
  */
 static void mt7927_try_direct_fw_kick(struct mt7927_dev *dev)
@@ -1170,6 +1355,10 @@ static void mt7927_try_direct_fw_kick(struct mt7927_dev *dev)
 	val = mt7927_rr(dev, MT_MCU_CMD);
 	dev_info(&dev->pdev->dev, "[FW] MCU_CMD before: 0x%08x\n", val);
 
+	/* Try WAKE_RX_PCIE first - signal host is ready for RX */
+	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_WAKE_RX_PCIE);
+	msleep(5);
+
 	/* Try NORMAL_STATE bit - signals firmware should be running */
 	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_NORMAL_STATE);
 	msleep(10);
@@ -1181,10 +1370,16 @@ static void mt7927_try_direct_fw_kick(struct mt7927_dev *dev)
 	msleep(10);
 	val = mt7927_rr(dev, MT_MCU_CMD);
 	dev_info(&dev->pdev->dev, "[FW] MCU_CMD after LMAC_DONE: 0x%08x\n", val);
+
+	/* Try RESET_DONE - signals reset complete */
+	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_RESET_DONE);
+	msleep(10);
+	val = mt7927_rr(dev, MT_MCU_CMD);
+	dev_info(&dev->pdev->dev, "[FW] MCU_CMD after all bits: 0x%08x\n", val);
 }
 
 /*
- * Send FW_START_REQ to start firmware execution - v2.16 with multiple methods
+ * Send FW_START_REQ to start firmware execution - v2.18 with enhanced methods
  */
 static int mt7927_mcu_start_firmware(struct mt7927_dev *dev, u32 addr)
 {
@@ -1193,14 +1388,27 @@ static int mt7927_mcu_start_firmware(struct mt7927_dev *dev, u32 addr)
 		.option = cpu_to_le32(addr ? BIT(0) : 0),  /* Override if addr set */
 	};
 	u32 cidx_before, didx_before, cidx_after, didx_after;
+	u32 int_sta, mcu2host_sta;
 	int ret;
+
+	dev_info(&dev->pdev->dev, "\n[FW] ========== Starting Firmware (v2.18) ==========\n");
+	dev_info(&dev->pdev->dev, "[FW] Start firmware: addr=0x%08x\n", addr);
+
+	/*
+	 * v2.18: Pre-condition - send ConnInfra wakeup pulse
+	 * The ROM needs to be awake to receive FW_START
+	 */
+	mt7927_conninfra_wakeup_pulse(dev);
+
+	/* Check interrupt state before command */
+	int_sta = mt7927_rr(dev, MT_WFDMA0_HOST_INT_STA);
+	mcu2host_sta = mt7927_rr(dev, MT_MCU2HOST_SW_INT_STA);
+	dev_info(&dev->pdev->dev, "[FW] INT_STA before: HOST=0x%08x MCU2HOST=0x%08x\n",
+		 int_sta, mcu2host_sta);
 
 	/* Dump Ring 15 state BEFORE command */
 	cidx_before = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_CIDX);
 	didx_before = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
-
-	dev_info(&dev->pdev->dev, "\n[FW] ========== Starting Firmware ==========\n");
-	dev_info(&dev->pdev->dev, "[FW] Start firmware: addr=0x%08x\n", addr);
 	dev_info(&dev->pdev->dev, "[FW] Ring15 BEFORE: CIDX=%d DIDX=%d\n", cidx_before, didx_before);
 
 	/* Method 1: Try standard Ring 15 (MCU WM) command */
@@ -1212,6 +1420,12 @@ static int mt7927_mcu_start_firmware(struct mt7927_dev *dev, u32 addr)
 	didx_after = mt7927_rr(dev, MT_TX_RING_BASE + MT_TX_RING_MCU_WM * MT_TX_RING_SIZE + MT_RING_DIDX);
 	dev_info(&dev->pdev->dev, "[FW] Ring15 AFTER:  CIDX=%d DIDX=%d (ret=%d)\n", cidx_after, didx_after, ret);
 
+	/* Check interrupt state after command */
+	int_sta = mt7927_rr(dev, MT_WFDMA0_HOST_INT_STA);
+	mcu2host_sta = mt7927_rr(dev, MT_MCU2HOST_SW_INT_STA);
+	dev_info(&dev->pdev->dev, "[FW] INT_STA after: HOST=0x%08x MCU2HOST=0x%08x\n",
+		 int_sta, mcu2host_sta);
+
 	if (cidx_after == cidx_before) {
 		dev_warn(&dev->pdev->dev, "[FW] WARNING: Ring15 CIDX didn't advance!\n");
 
@@ -1220,8 +1434,27 @@ static int mt7927_mcu_start_firmware(struct mt7927_dev *dev, u32 addr)
 		ret = mt7927_fw_start_via_ring16(dev, addr);
 
 		/* Method 3: Try direct MCU_CMD register kick */
+		dev_info(&dev->pdev->dev, "[FW] Method 3: Direct MCU_CMD kick\n");
 		mt7927_try_direct_fw_kick(dev);
+
+		/* v2.18 Method 4: Trigger MCU via software interrupt */
+		dev_info(&dev->pdev->dev, "[FW] Method 4: Software interrupt trigger\n");
+		mt7927_trigger_mcu_sw_int(dev);
+
+		/* v2.18 Method 5: DUMMY_CR handshake */
+		dev_info(&dev->pdev->dev, "[FW] Method 5: DUMMY_CR handshake\n");
+		mt7927_dummy_cr_handshake(dev);
+
+		/* v2.18 Method 6: MCU reset kick */
+		dev_info(&dev->pdev->dev, "[FW] Method 6: Reset-based MCU kick\n");
+		mt7927_kick_mcu_via_reset(dev);
 	}
+
+	/* Final interrupt state */
+	int_sta = mt7927_rr(dev, MT_WFDMA0_HOST_INT_STA);
+	mcu2host_sta = mt7927_rr(dev, MT_MCU2HOST_SW_INT_STA);
+	dev_info(&dev->pdev->dev, "[FW] INT_STA final: HOST=0x%08x MCU2HOST=0x%08x\n",
+		 int_sta, mcu2host_sta);
 
 	return ret;
 }
