@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.19.0
+ * MT7927 WiFi 7 Linux Driver v2.20.0
+ *
+ * v2.20.0 Changes:
+ * - CRITICAL DISCOVERY: Host WFDMA (0xD4xxx) NOT writable!
+ * - But MCU WPDMA (0x2xxx) IS writable - DUMMY_CR at 0x2120 works!
+ * - Solution: Use MCU WPDMA base for MCU_CMD (0x21F0 not 0xD41F0)
+ * - Add MT_MCU_CMD_ALT at MCU WPDMA offset for writable MCU control
+ * - Test both addresses and use whichever works
  *
  * v2.19.0 Changes:
- * - CRITICAL: MCU_CMD writes don't stick (reads back 0x00)
- * - WFSYS+0x10 = 0x1d2 not 0x1D1E - WF subsystem may not be powered
- * - Add WF_ON power control sequence before WFDMA init
- * - Try enabling WF subsystem via ConnInfra power control registers
- * - Add bus remapping for WFDMA access through ConnInfra
- *
- * v2.18.0 Changes:
- * - Enhanced ROM interrupt configuration before FW_START
- * - Enable MCU2HOST_SW_INT_ENA and TX ring command interrupts
+ * - WF power enable - but Host WFDMA still not accessible
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -24,7 +23,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.19.0"
+#define DRV_VERSION "2.20.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -152,8 +151,12 @@ MODULE_PARM_DESC(firmware_path, "Custom firmware directory (e.g., /var/lib/mt792
 #define MT_DMASHDL_SW_CONTROL_OFS	(FIXED_MAP_DMASHDL + 0x04)
 #define MT_DMASHDL_BYPASS		BIT(0)
 
-/* MCU Command Register - for waking up MCU/ROM */
-#define MT_MCU_CMD			(MT_WFDMA0_BASE + 0x1f0)
+/* MCU Command Register - for waking up MCU/ROM
+ * v2.20: Host WFDMA (0xD4xxx) is NOT writable on MT7927!
+ * But MCU WPDMA (0x2xxx) IS writable - use that instead!
+ */
+#define MT_MCU_CMD			(MT_WFDMA0_BASE + 0x1f0)      /* 0xD41F0 - NOT writable! */
+#define MT_MCU_CMD_ALT			(MT_MCU_WPDMA0_BAR + 0x1f0)   /* 0x21F0 - TRY THIS! */
 #define MT_MCU_CMD_WAKE_RX_PCIE		BIT(0)
 #define MT_MCU_CMD_STOP_DMA		BIT(1)
 #define MT_MCU_CMD_RESET_DONE		BIT(2)
@@ -1119,21 +1122,42 @@ static int mt7927_enable_wf_power(struct mt7927_dev *dev)
 		return 0;
 	}
 
-	/* Even if we don't get 0x1D1E, check if MCU_CMD is now writable */
-	dev_info(&dev->pdev->dev, "[WF_PWR] Testing MCU_CMD writability...\n");
+	/*
+	 * v2.20: Test BOTH MCU_CMD addresses
+	 * Host WFDMA (0xD41F0) doesn't work, but MCU WPDMA (0x21F0) might!
+	 */
+	dev_info(&dev->pdev->dev, "[WF_PWR] v2.20: Testing MCU_CMD at BOTH addresses...\n");
+
+	/* Test Host WFDMA MCU_CMD (0xD41F0) - known not to work */
 	val = mt7927_rr(dev, MT_MCU_CMD);
-	dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD before: 0x%08x\n", val);
+	dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD (0x%05x) before: 0x%08x\n", MT_MCU_CMD, val);
 	mt7927_wr(dev, MT_MCU_CMD, 0xDEADBEEF);
 	val = mt7927_rr(dev, MT_MCU_CMD);
-	dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD after write 0xDEADBEEF: 0x%08x\n", val);
+	dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD (0xD41F0) after write: 0x%08x %s\n",
+		 val, (val == 0xDEADBEEF) ? "WORKS!" : "FAILED");
 
-	if (val == 0xDEADBEEF || val != 0) {
-		dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD is now writable!\n");
-		mt7927_wr(dev, MT_MCU_CMD, 0);  /* Clear test value */
+	if (val == 0xDEADBEEF) {
+		dev_info(&dev->pdev->dev, "[WF_PWR] Host WFDMA MCU_CMD is writable!\n");
+		mt7927_wr(dev, MT_MCU_CMD, 0);
 		return 0;
 	}
 
-	dev_warn(&dev->pdev->dev, "[WF_PWR] MCU_CMD still not writable\n");
+	/* Test MCU WPDMA MCU_CMD (0x21F0) - this SHOULD work! */
+	val = mt7927_rr(dev, MT_MCU_CMD_ALT);
+	dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD_ALT (0x%05x) before: 0x%08x\n", MT_MCU_CMD_ALT, val);
+	mt7927_wr(dev, MT_MCU_CMD_ALT, 0xDEADBEEF);
+	val = mt7927_rr(dev, MT_MCU_CMD_ALT);
+	dev_info(&dev->pdev->dev, "[WF_PWR] MCU_CMD_ALT (0x21F0) after write: 0x%08x %s\n",
+		 val, (val == 0xDEADBEEF) ? "WORKS!" : "FAILED");
+
+	if (val == 0xDEADBEEF) {
+		dev_info(&dev->pdev->dev, "[WF_PWR] *** MCU WPDMA MCU_CMD_ALT is WRITABLE! ***\n");
+		dev_info(&dev->pdev->dev, "[WF_PWR] Use 0x2xxx addresses instead of 0xD4xxx!\n");
+		mt7927_wr(dev, MT_MCU_CMD_ALT, 0);
+		return 0;
+	}
+
+	dev_warn(&dev->pdev->dev, "[WF_PWR] Neither MCU_CMD address is writable\n");
 	return -EAGAIN;  /* Continue anyway */
 }
 
@@ -1504,38 +1528,43 @@ static void mt7927_dummy_cr_handshake(struct mt7927_dev *dev)
 
 /*
  * Try direct MCU_CMD register method to kick firmware
+ * v2.20: Try BOTH Host WFDMA (0xD41F0) and MCU WPDMA (0x21F0) addresses
  */
 static void mt7927_try_direct_fw_kick(struct mt7927_dev *dev)
 {
 	u32 val;
 
-	dev_info(&dev->pdev->dev, "[FW] Trying direct MCU_CMD register kick...\n");
+	dev_info(&dev->pdev->dev, "[FW] v2.20: Trying MCU_CMD kick via BOTH addresses...\n");
 
-	/* Set various MCU_CMD bits to try to wake/kick firmware */
+	/*
+	 * First try Host WFDMA MCU_CMD (0xD41F0) - known not to work on MT7927
+	 */
+	dev_info(&dev->pdev->dev, "[FW] Trying Host WFDMA MCU_CMD (0x%05x)...\n", MT_MCU_CMD);
 	val = mt7927_rr(dev, MT_MCU_CMD);
 	dev_info(&dev->pdev->dev, "[FW] MCU_CMD before: 0x%08x\n", val);
 
-	/* Try WAKE_RX_PCIE first - signal host is ready for RX */
-	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_WAKE_RX_PCIE);
-	msleep(5);
-
-	/* Try NORMAL_STATE bit - signals firmware should be running */
-	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_NORMAL_STATE);
+	mt7927_wr(dev, MT_MCU_CMD, MT_MCU_CMD_WAKE_RX_PCIE | MT_MCU_CMD_NORMAL_STATE |
+		  MT_MCU_CMD_LMAC_DONE | MT_MCU_CMD_RESET_DONE);
 	msleep(10);
 	val = mt7927_rr(dev, MT_MCU_CMD);
-	dev_info(&dev->pdev->dev, "[FW] MCU_CMD after NORMAL_STATE: 0x%08x\n", val);
+	dev_info(&dev->pdev->dev, "[FW] MCU_CMD after Host write: 0x%08x\n", val);
 
-	/* Also try LMAC_DONE - indicates lower MAC ready */
-	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_LMAC_DONE);
-	msleep(10);
-	val = mt7927_rr(dev, MT_MCU_CMD);
-	dev_info(&dev->pdev->dev, "[FW] MCU_CMD after LMAC_DONE: 0x%08x\n", val);
+	/*
+	 * Now try MCU WPDMA MCU_CMD_ALT (0x21F0) - this might work!
+	 */
+	dev_info(&dev->pdev->dev, "[FW] Trying MCU WPDMA MCU_CMD_ALT (0x%05x)...\n", MT_MCU_CMD_ALT);
+	val = mt7927_rr(dev, MT_MCU_CMD_ALT);
+	dev_info(&dev->pdev->dev, "[FW] MCU_CMD_ALT before: 0x%08x\n", val);
 
-	/* Try RESET_DONE - signals reset complete */
-	mt7927_set(dev, MT_MCU_CMD, MT_MCU_CMD_RESET_DONE);
+	mt7927_wr(dev, MT_MCU_CMD_ALT, MT_MCU_CMD_WAKE_RX_PCIE | MT_MCU_CMD_NORMAL_STATE |
+		  MT_MCU_CMD_LMAC_DONE | MT_MCU_CMD_RESET_DONE);
 	msleep(10);
-	val = mt7927_rr(dev, MT_MCU_CMD);
-	dev_info(&dev->pdev->dev, "[FW] MCU_CMD after all bits: 0x%08x\n", val);
+	val = mt7927_rr(dev, MT_MCU_CMD_ALT);
+	dev_info(&dev->pdev->dev, "[FW] MCU_CMD_ALT after MCU write: 0x%08x\n", val);
+
+	if (val != 0) {
+		dev_info(&dev->pdev->dev, "[FW] *** MCU_CMD_ALT is WRITABLE! Value stuck! ***\n");
+	}
 }
 
 /*
