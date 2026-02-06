@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * MT7927 WiFi 7 Linux Driver v2.20.0
+ * MT7927 WiFi 7 Linux Driver v2.21.0
+ *
+ * v2.21.0 Changes:
+ * - NEITHER 0xD41F0 nor 0x21F0 is writable for MCU_CMD!
+ * - DUMMY_CR 0x2120 = 0xffff0002 is pre-existing, not our write
+ * - Add comprehensive register scan to find writable regions
+ * - Scan ConnInfra, WFDMA, MCU WPDMA to find what accepts writes
+ * - The ROM/MCU is not running (PC=0) - need different approach
  *
  * v2.20.0 Changes:
- * - CRITICAL DISCOVERY: Host WFDMA (0xD4xxx) NOT writable!
- * - But MCU WPDMA (0x2xxx) IS writable - DUMMY_CR at 0x2120 works!
- * - Solution: Use MCU WPDMA base for MCU_CMD (0x21F0 not 0xD41F0)
- * - Add MT_MCU_CMD_ALT at MCU WPDMA offset for writable MCU control
- * - Test both addresses and use whichever works
- *
- * v2.19.0 Changes:
- * - WF power enable - but Host WFDMA still not accessible
+ * - Tested both MCU_CMD addresses - neither works
  *
  * Copyright (C) 2026 MT7927 Linux Driver Project
  */
@@ -23,7 +23,7 @@
 #include <linux/interrupt.h>
 
 #define DRV_NAME "mt7927"
-#define DRV_VERSION "2.20.0"
+#define DRV_VERSION "2.21.0"
 
 /* PCI IDs */
 #define MT7927_VENDOR_ID	0x14c3
@@ -1162,6 +1162,83 @@ static int mt7927_enable_wf_power(struct mt7927_dev *dev)
 }
 
 /*
+ * v2.21: Scan BAR0 regions to find writable registers
+ * This helps identify which regions are accessible and which need different init
+ */
+static void mt7927_scan_writable_regs(struct mt7927_dev *dev)
+{
+	u32 test_val = 0xA5A5A5A5;
+	u32 before, after;
+	int writable_count = 0;
+
+	dev_info(&dev->pdev->dev, "\n[SCAN] v2.21: Scanning for writable registers...\n");
+
+	/* Regions to test */
+	struct {
+		u32 addr;
+		const char *name;
+	} test_regs[] = {
+		/* ConnInfra HOST region */
+		{ 0x0e0000, "ConnInfra HOST +0x00" },
+		{ 0x0e0004, "ConnInfra HOST +0x04" },
+		{ 0x0e0010, "LPCTL" },
+		{ 0x0e00f0, "CONN_MISC" },
+		/* ConnInfra WFSYS region */
+		{ 0x0f0000, "WFSYS +0x00" },
+		{ 0x0f0010, "WFSYS +0x10 (status)" },
+		{ 0x0f0140, "WFSYS_RST" },
+		/* MCU WPDMA region (0x2xxx) */
+		{ 0x02000, "MCU WPDMA +0x00" },
+		{ 0x02100, "MCU WPDMA RST" },
+		{ 0x02120, "DUMMY_CR" },
+		{ 0x021f0, "MCU_CMD_ALT" },
+		{ 0x02208, "MCU GLO_CFG" },
+		{ 0x02300, "MCU Ring BASE" },
+		{ 0x023f8, "MCU Ring15 CIDX" },
+		{ 0x02400, "MCU Ring16 BASE" },
+		{ 0x02408, "MCU Ring16 CIDX" },
+		/* Host WFDMA region (0xD4xxx) */
+		{ 0xd4000, "Host WFDMA +0x00" },
+		{ 0xd4100, "Host WFDMA RST" },
+		{ 0xd41f0, "MCU_CMD" },
+		{ 0xd4204, "HOST_INT_ENA" },
+		{ 0xd4208, "GLO_CFG" },
+		{ 0xd4300, "Host Ring BASE" },
+		{ 0xd43f8, "Host Ring15 CIDX" },
+		{ 0xd4408, "Host Ring16 CIDX" },
+		/* PCIe MAC region */
+		{ 0x10000, "PCIe MAC +0x00" },
+		{ 0x10188, "PCIe MAC INT" },
+	};
+
+	for (int i = 0; i < ARRAY_SIZE(test_regs); i++) {
+		if (test_regs[i].addr >= dev->regs_len)
+			continue;
+
+		before = mt7927_rr(dev, test_regs[i].addr);
+		mt7927_wr(dev, test_regs[i].addr, test_val);
+		after = mt7927_rr(dev, test_regs[i].addr);
+
+		/* Restore original value */
+		mt7927_wr(dev, test_regs[i].addr, before);
+
+		if (after == test_val) {
+			dev_info(&dev->pdev->dev, "[SCAN] 0x%05x %-20s: WRITABLE! (was 0x%08x)\n",
+				 test_regs[i].addr, test_regs[i].name, before);
+			writable_count++;
+		} else if (after != before) {
+			dev_info(&dev->pdev->dev, "[SCAN] 0x%05x %-20s: PARTIAL (0x%08x -> 0x%08x)\n",
+				 test_regs[i].addr, test_regs[i].name, before, after);
+		} else {
+			dev_info(&dev->pdev->dev, "[SCAN] 0x%05x %-20s: read-only (0x%08x)\n",
+				 test_regs[i].addr, test_regs[i].name, before);
+		}
+	}
+
+	dev_info(&dev->pdev->dev, "[SCAN] Found %d writable registers\n\n", writable_count);
+}
+
+/*
  * Wake ROM bootloader via ConnInfra power management
  * This is required before the ROM will respond to DMA commands
  */
@@ -2046,6 +2123,9 @@ static int mt7927_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = mt7927_enable_wf_power(dev);
 	if (ret)
 		dev_warn(&pdev->dev, "WF power enable issue\n");
+
+	/* v2.21: Scan for writable registers to understand BAR0 layout */
+	mt7927_scan_writable_regs(dev);
 
 	ret = mt7927_dma_init(dev);
 	if (ret) {
